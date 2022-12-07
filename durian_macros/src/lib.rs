@@ -14,8 +14,10 @@ pub fn bincode_packet(_attr: TokenStream, tokens: TokenStream) -> TokenStream {
                     if fields.named.is_empty() {
                         panic!("Struct annotated with #[bincode_packet] and has named fields cannot have empty number of fields")
                     }
+                    // See https://github.com/serde-rs/serde/issues/1465 for why serde macro is needed
                     return quote! {
-                        #[derive(serde::Serialize, serde::Deserialize, durian::BinPacket)]
+                        #[derive(durian::serde::Serialize, durian::serde::Deserialize, durian::BinPacket)]
+                        #[serde(crate = "durian::serde")]
                         #input
                     }.into()
                 },
@@ -39,18 +41,18 @@ pub fn bin_packet(tokens: TokenStream) -> TokenStream {
     let packet_builder_name = Ident::new((name.to_string() + "PacketBuilder").as_str(), Span::call_site());
     
     return quote! {
-        impl durian::packet::Packet for #name {
-            fn as_bytes(&self) -> bytes::Bytes {
-                bytes::Bytes::from(bincode::serialize(self).unwrap())
+        impl durian::Packet for #name {
+            fn as_bytes(&self) -> durian::bytes::Bytes {
+                durian::bytes::Bytes::from(durian::bincode::serialize(self).unwrap())
             }
         }
         
         #[derive(Copy, Clone)]
         pub struct #packet_builder_name;
-        impl durian::packet::PacketBuilder<#name> for #packet_builder_name {
+        impl durian::PacketBuilder<#name> for #packet_builder_name {
         
-            fn read(&self, bytes: bytes::Bytes) -> Result<#name, Box<dyn std::error::Error>> {
-                Ok(bincode::deserialize(bytes.as_ref()).unwrap())
+            fn read(&self, bytes: durian::bytes::Bytes) -> Result<#name, Box<dyn std::error::Error>> {
+                Ok(durian::bincode::deserialize(bytes.as_ref()).unwrap())
             }
         }
     }.into();
@@ -64,17 +66,17 @@ pub fn unit_packet(tokens: TokenStream) -> TokenStream {
     let packet_builder_name = Ident::new((name.to_string() + "PacketBuilder").as_str(), Span::call_site());
 
     return quote! {
-        impl durian::packet::Packet for #name {
-            fn as_bytes(&self) -> bytes::Bytes {
-                bytes::Bytes::from(#name_str)
+        impl durian::Packet for #name {
+            fn as_bytes(&self) -> durian::bytes::Bytes {
+                durian::bytes::Bytes::from(#name_str)
             }
         }
         
         #[derive(Copy, Clone)]
         pub struct #packet_builder_name;
-        impl durian::packet::PacketBuilder<#name> for #packet_builder_name {
+        impl durian::PacketBuilder<#name> for #packet_builder_name {
         
-            fn read(&self, bytes: bytes::Bytes) -> Result<#name, Box<dyn std::error::Error>> {
+            fn read(&self, bytes: durian::bytes::Bytes) -> Result<#name, Box<dyn std::error::Error>> {
                 Ok(#name)
             }
         }

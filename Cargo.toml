@@ -1,5 +1,6 @@
 [workspace]
 members = [
     "durian",
-    "durian_macros"
+    "durian_macros",
+    "example"
 ]

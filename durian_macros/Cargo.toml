@@ -9,7 +9,7 @@ homepage = "https://github.com/spoorn/durian"
 repository = "https://github.com/spoorn/durian"
 license = "MIT OR GNU GENERAL PUBLIC LICENSE v3.0"
 edition = "2021"
-readme = "../README.md"
+readme = "README.md"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
