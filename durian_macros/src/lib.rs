@@ -117,7 +117,7 @@ pub fn error_only_message(tokens: TokenStream) -> TokenStream {
             }
         }
         
-        impl Error for #name {}
+        impl std::error::Error for #name {}
     };
     modified.into()
 }

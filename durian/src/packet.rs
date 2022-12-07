@@ -6,6 +6,7 @@ use std::sync::Arc;
 use bimap::BiMap;
 use bytes::Bytes;
 use derive_more::Display;
+use durian_macros::ErrorOnlyMessage;
 use hashbrown::HashMap;
 use log::trace;
 use quinn::{Connection, RecvStream, SendStream};
@@ -15,8 +16,6 @@ use tokio::sync::{mpsc, RwLock};
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::Receiver;
 use tokio::task::JoinHandle;
-
-use durian_macros::ErrorOnlyMessage;
 
 use crate::quinn_helpers::{make_client_endpoint, make_server_endpoint};
 
@@ -749,9 +748,9 @@ impl PacketManager {
 mod tests {
     use std::time::Duration;
 
+    use durian_macros::bincode_packet;
     use tokio::sync::mpsc;
     use tokio::time::sleep;
-    use durian_macros::bincode_packet;
 
     use durian::packet::PacketManager;
 
