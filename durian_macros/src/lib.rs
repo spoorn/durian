@@ -15,13 +15,13 @@ pub fn bincode_packet(_attr: TokenStream, tokens: TokenStream) -> TokenStream {
                         panic!("Struct annotated with #[bincode_packet] and has named fields cannot have empty number of fields")
                     }
                     return quote! {
-                        #[derive(serde::Serialize, serde::Deserialize, durian_macros::BinPacket)]
+                        #[derive(serde::Serialize, serde::Deserialize, durian::BinPacket)]
                         #input
                     }.into()
                 },
                 Fields::Unit => {
                     return quote! {
-                        #[derive(durian_macros::UnitPacket)]
+                        #[derive(durian::UnitPacket)]
                         #input
                     }.into()
                 },
