@@ -13,7 +13,7 @@
 //! 
 //! ```toml
 //! [dependencies]
-//! durian = "a.b.c"
+//! durian = "0.1.x"
 //! 
 //! // The macros are included by default.  To disable, use
 //! // durian = { version = "a.b.c", features = ["no-macros"] }
@@ -21,9 +21,11 @@
 //! 
 //! # Packet/PacketBuilder
 //! 
-//! `durian` allows for structuring [`Packets`] as simple structs.  The structs must implement
-//! Trait [`Packet`], which has a single function [`Packet::as_bytes()`] for serializing the [`Packet`]
-//! into bytes to be sent over the wire between client and server.
+//! `durian` allows for structuring `Packets` as simple structs.  The structs must implement
+//! Trait [`Packet`], which has a single function [`Packet::as_bytes()`] which will be called for
+//! serializing the [`Packet`] into bytes to be sent over the wire between client and server.
+//! 
+//! There also needs to be a struct that implements [`PacketBuilder`]
 //!
 //! 
 //! # PacketManager
