@@ -2,5 +2,6 @@
 members = [
     "durian",
     "durian_macros",
-    "example"
+    "example",
+    "bench"
 ]

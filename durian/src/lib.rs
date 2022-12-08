@@ -26,10 +26,7 @@
 //! 
 //! ```toml
 //! [dependencies]
-//! durian = "0.1.x"
-//! 
-//! ## The macros are included by default.  To disable, use
-//! ## durian = { version = "a.b.c", features = ["no-macros"] }
+//! durian = "0.2"
 //! ```
 //! 
 //! # Packet/PacketBuilder
@@ -55,7 +52,7 @@
 //! use durian::bincode_packet;
 //!
 //! // Automatically implements Packet, and generates a PositionPacketBuilder that implements 
-//! // PacketBuilder.  You can also add other macros such as derive macros so long s they don't
+//! // PacketBuilder.  You can also add other macros such as derive macros so long as they don't
 //! // conflict with what #[bincode_packet] adds (See bincode_packet documentation).
 //! #[bincode_packet]
 //! #[derive(Debug)]
