@@ -168,6 +168,12 @@
 //! For a comprehensive minimal example, see the [`example crate`](https://github.com/spoorn/durian/tree/main/example).
 //! 
 //! I also use this library myself for simple game development.  See the [`multisnakegame repo`](https://github.com/spoorn/multisnakegame).
+//! 
+//! 
+//! # Debugging
+//! 
+//! `durian` uses the `log` API with debug and trace logs.  Enable debug logging to see update logs
+//! from `durian`, and enable trace logging to see packet byte transmissions.
 
 mod quinn_helpers;
 mod packet;
