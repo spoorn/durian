@@ -56,8 +56,8 @@ Add `durian` to your Cargo.toml via `cargo add durian` or manually:
 [dependencies]
 durian = "0.1.x"
 
-// The macros are included by default.  To disable, use
-// durian = { version = "a.b.c", features = ["no-macros"] }
+# The macros are included by default.  To disable, use
+# durian = { version = "a.b.c", features = ["no-macros"] }
 ```
 
 # Packet/PacketBuilder
