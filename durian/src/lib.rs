@@ -1,11 +1,24 @@
 //! _"You either love it, hate it, or never heard of it.  There is no in between"_
 //! 
-//! `durian` is a client-server networking library built on top of the QUIC protocol which is 
+//! `durian` is a client-server networking library built on top of the [QUIC](https://en.wikipedia.org/wiki/QUIC) protocol which is 
 //! implemented in Rust by [quinn](https://github.com/quinn-rs/quinn).
 //! 
 //! It provides a thin abstraction layer above the lower-level details of byte management, 
 //! framing, and more, to make writing netcode easier and allow the user to focus on the messaging
 //! contents instead.
+//! 
+//! ### Disclaimer
+//! This library is in very early (but very active!) development, meaning a LOT of it will change rapidly.  
+//! In its current state, it's usable to create a quick multiplayer demo.  I use it myself to learn [game
+//! development](https://github.com/spoorn/multisnakegame).
+//! 
+//! This __is not production ready__, and is missing a lot of features to make it production ready.
+//! 
+//! However, if you are trying to build something and want to avoid a lot of the headache of lower-level netcode details,
+//! and don't need the "production" features, such as a multiplayer game demo, LAN sandbox applications, etc., then feel
+//! free to try it out!  
+//! 
+//! `durian`'s goal is to make it as simple as possible to setup netcode (See the examples below).
 //! 
 //! # Cargo.toml Dependency
 //! 
