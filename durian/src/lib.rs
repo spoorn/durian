@@ -98,7 +98,7 @@
 //! There are 4 basic steps to using the [`PacketManager`], which would be done on both the client
 //! and server side:
 //!
-//! 1. Create a [`PacketManager`] via [`new()`](`PacketManager::new()`) or, if calling from an async context, [`new_for_async()`](`Packetmanager::new_for_async()`)
+//! 1. Create a [`PacketManager`] via [`new()`](`PacketManager::new()`) or, if calling from an async context, [`new_for_async()`](`PacketManager::new_for_async()`)
 //! 
 //! 2. Register the [`Packets`](`Packet`) and [`PacketBuilders`](`PacketBuilder`) that the [`PacketManager`] will __receive__
 //! and __send__ using [`register_receive_packet()`](`PacketManager::register_receive_packet()`) and [`register_send_packet()`](`PacketManager::register_send_packet()`).  
