@@ -7,7 +7,7 @@ keywords = ["durian", "macros", "netcode", "packets", "gamedev"]
 description = "Macros for the durian crate for ease of creating Packet structs"
 homepage = "https://github.com/spoorn/durian"
 repository = "https://github.com/spoorn/durian"
-license = "MIT OR GNU GENERAL PUBLIC LICENSE v3.0"
+license = "MIT"
 edition = "2021"
 readme = "README.md"
 
