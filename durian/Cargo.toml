@@ -35,6 +35,4 @@ log = "0.4.17"
 durian_macros = { version = "0.1", optional = true }
 
 [features]
-default = ["durian_macros"]
-macros = ["durian_macros"]
-no-macros = []
+default = []

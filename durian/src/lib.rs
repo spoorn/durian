@@ -177,22 +177,17 @@ mod packet;
 
 pub use packet::*;
 
-#[cfg(feature = "durian_macros")]
 #[allow(unused_imports)]
 pub use durian_macros;
 
-#[cfg(feature = "durian_macros")]
 #[allow(unused_imports)]
 pub use durian_macros::*;
 
-#[cfg(feature = "durian_macros")]
 #[allow(unused_imports)]
 pub use bytes;
 
-#[cfg(feature = "durian_macros")]
 #[allow(unused_imports)]
 pub use serde;
 
-#[cfg(feature = "durian_macros")]
 #[allow(unused_imports)]
 pub use bincode;
