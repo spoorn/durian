@@ -8,7 +8,7 @@ use bytes::Bytes;
 use derive_more::Display;
 use durian_macros::ErrorOnlyMessage;
 use hashbrown::HashMap;
-use log::trace;
+use log::{debug, error, trace};
 use quinn::{Connection, RecvStream, SendStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::runtime::Runtime;
@@ -171,7 +171,7 @@ impl PacketManager {
             Some(s) => { s.into() }
         };
         let server_addr = server_addr.into();
-        println!("Initiating connection with is_server={}, num_incoming_streams={}, num_outgoing_streams={}, server_addr={}, client_addr={}", is_server, num_incoming_streams, num_outgoing_streams, server_addr, client_addr);
+        debug!("Initiating connection with is_server={}, num_incoming_streams={}, num_outgoing_streams={}, server_addr={}, client_addr={}", is_server, num_incoming_streams, num_outgoing_streams, server_addr, client_addr);
         // TODO: assert num streams equals registered
         let server_addr = server_addr.parse().unwrap();
         
@@ -187,7 +187,7 @@ impl PacketManager {
                 if client_connections.read().await.contains_key(&addr.to_string()) {
                     panic!("Client with addr={} was already connected", addr);
                 }
-                println!("[server] connection accepted: addr={}", conn.remote_address());
+                debug!("[server] connection accepted: addr={}", conn.remote_address());
                 let (server_send_streams, recv_streams) = PacketManager::open_streams_for_connection(addr.to_string(), &conn, num_incoming_streams, num_outgoing_streams).await?;
                 let res = PacketManager::spawn_receive_thread(&addr.to_string(), recv_streams, runtime.as_ref()).unwrap();
                 new_rxs.write().await.push((addr.to_string(), res));
@@ -205,14 +205,14 @@ impl PacketManager {
                     match expected_num_clients {
                         None => {
                             loop {
-                                println!("[server] Waiting for more clients...");
+                                debug!("[server] Waiting for more clients...");
                                 let incoming_conn = endpoint.accept().await.unwrap();
                                 let conn = incoming_conn.await.unwrap();
                                 let addr = conn.remote_address();
                                 if client_connections.read().await.contains_key(&addr.to_string()) {
                                     panic!("Client with addr={} was already connected", addr);
                                 }
-                                println!("[server] connection accepted: addr={}", conn.remote_address());
+                                debug!("[server] connection accepted: addr={}", conn.remote_address());
                                 let (send_streams, recv_streams) = PacketManager::open_streams_for_connection(addr.to_string(), &conn, num_incoming_streams, num_outgoing_streams).await.unwrap();
                                 let res = PacketManager::spawn_receive_thread(&addr.to_string(), recv_streams, arc_runtime.as_ref()).unwrap();
                                 arc_rx.write().await.push((addr.to_string(), res));
@@ -223,14 +223,14 @@ impl PacketManager {
                         }
                         Some(expected_num_clients) => {
                             for i in 0..(expected_num_clients - wait_for_clients) {
-                                println!("[server] Waiting for client #{}", i + wait_for_clients);
+                                debug!("[server] Waiting for client #{}", i + wait_for_clients);
                                 let incoming_conn = endpoint.accept().await.unwrap();
                                 let conn = incoming_conn.await.unwrap();
                                 let addr = conn.remote_address();
                                 if client_connections.read().await.contains_key(&addr.to_string()) {
                                     panic!("Client with addr={} was already connected", addr);
                                 }
-                                println!("[server] connection accepted: addr={}", conn.remote_address());
+                                debug!("[server] connection accepted: addr={}", conn.remote_address());
                                 let (send_streams, recv_streams) = PacketManager::open_streams_for_connection(addr.to_string(), &conn, num_incoming_streams, num_outgoing_streams).await.unwrap();
                                 let res = PacketManager::spawn_receive_thread(&addr.to_string(), recv_streams, arc_runtime.as_ref()).unwrap();
                                 arc_rx.write().await.push((addr.to_string(), res));
@@ -260,7 +260,7 @@ impl PacketManager {
             // Connect to the server passing in the server name which is supposed to be in the server certificate.
             let conn = endpoint.connect(server_addr, "hostname")?.await?;
             let addr = conn.remote_address();
-            println!("[client] connected: addr={}", addr);
+            debug!("[client] connected: addr={}", addr);
             let (client_send_streams, recv_streams) = PacketManager::open_streams_for_connection(addr.to_string(), &conn, num_incoming_streams, num_outgoing_streams).await?;
             let res = PacketManager::spawn_receive_thread(&addr.to_string(), recv_streams, runtime.as_ref()).unwrap();
             new_rxs.write().await.push((addr.to_string(), res));
@@ -277,21 +277,21 @@ impl PacketManager {
         // Note: Packets are not sent immediately upon the write.  The thread needs to be kept
         // open so that the packets can actually be sent over the wire to the client.
         for i in 0..num_outgoing_streams {
-            println!("Opening outgoing stream for addr={} packet id={}", addr, i);
+            trace!("Opening outgoing stream for addr={} packet id={}", addr, i);
             let mut send_stream = conn
                 .open_uni()
                 .await?;
-            println!("Writing packet to {} for packet id {}", addr, i);
+            trace!("Writing packet to {} for packet id {}", addr, i);
             send_stream.write_u32(i).await?;
             send_streams.insert(i, RwLock::new(send_stream));
         }
 
         for i in 0..num_incoming_streams {
-            println!("Accepting incoming stream from {} for packet id {}", addr, i);
+            trace!("Accepting incoming stream from {} for packet id {}", addr, i);
             let mut recv = conn.accept_uni().await?;
-            println!("Validating incoming packet from {} id {}", addr, i);
+            trace!("Validating incoming packet from {} id {}", addr, i);
             let id = recv.read_u32().await?;
-            println!("Received incoming packet from {} with packet id {}", addr, id);
+            trace!("Received incoming packet from {} with packet id {}", addr, id);
             // if id >= self.next_receive_id {
             //     return Err(Box::new(ConnectionError::new(format!("Received unexpected packet ID {} from server", id))));
             // }
@@ -304,7 +304,7 @@ impl PacketManager {
     
     fn spawn_receive_thread<S: Into<String>>(addr: S, recv_streams: HashMap<u32, RecvStream>, runtime: &Option<Runtime>) -> Result<HashMap<u32, (RwLock<Receiver<Bytes>>, JoinHandle<()>)>, Box<dyn Error>> {
         let mut rxs = HashMap::new();
-        println!("Spawning receive thread for addr={} for {} ids", addr.into(), recv_streams.len());
+        trace!("Spawning receive thread for addr={} for {} ids", addr.into(), recv_streams.len());
         for (id, mut recv_stream) in recv_streams.into_iter() {
             let (tx, rx) = mpsc::channel(100);
 
@@ -317,11 +317,11 @@ impl PacketManager {
                     match chunk {
                         None => {
                             // TODO: Error
-                            println!("Receive stream closed, got None when reading chunks");
+                            trace!("Receive stream closed, got None when reading chunks");
                             break;
                         }
                         Some(chunk) => {
-                            println!("Received chunked packets for id={}, length={}", id, chunk.bytes.len());
+                            trace!("Received chunked packets for id={}, length={}", id, chunk.bytes.len());
                             let bytes;
                             match partial_chunk.take() {
                                 None => {
@@ -346,18 +346,18 @@ impl PacketManager {
                                 match partial_chunk.take() {
                                     None => {
                                         if matches!(frame.as_ref(), FRAME_BOUNDARY) {
-                                            println!("Found a dangling FRAME_BOUNDARY in packet frame.  This most likely is a bug in the networking library!")
+                                            error!("Found a dangling FRAME_BOUNDARY in packet frame.  This most likely is a bug in durian")
                                         } else {
-                                            println!("Transmitting received bytes of length {}", frame.len());
+                                            trace!("Transmitting received bytes of length {}", frame.len());
                                             tx.send(frame).await.unwrap();
                                         }
                                     },
                                     Some(part) => {
                                         let reconstructed_frame = Bytes::from([part, frame].concat());
                                         if matches!(reconstructed_frame.as_ref(), FRAME_BOUNDARY) {
-                                            println!("Found a dangling FRAME_BOUNDARY in packet frame.  This most likely is a bug in the networking library!")
+                                            error!("Found a dangling FRAME_BOUNDARY in packet frame.  This most likely is a bug in durian")
                                         } else {
-                                            println!("Transmitting reconstructed received bytes of length {}", reconstructed_frame.len());
+                                            trace!("Transmitting reconstructed received bytes of length {}", reconstructed_frame.len());
                                             tx.send(reconstructed_frame).await.unwrap();
                                         }
                                     }
@@ -401,7 +401,7 @@ impl PacketManager {
         let packet_type_id = TypeId::of::<T>();
         self.receive_packets.insert(self.next_receive_id, packet_type_id);
         self.recv_packet_builders.insert(packet_type_id, Box::new(packet_builder));
-        println!("Registered Receive packet with id={}, type={}", self.next_receive_id, type_name::<T>());
+        debug!("Registered Receive packet with id={}, type={}", self.next_receive_id, type_name::<T>());
         self.next_receive_id += 1;
         Ok(())
     }
@@ -409,7 +409,7 @@ impl PacketManager {
     pub fn register_send_packet<T: Packet + 'static>(&mut self) -> Result<(), ReceiveError> {
         self.validate_packet_is_new::<T>(true)?;
         self.send_packets.insert(self.next_send_id, TypeId::of::<T>());
-        println!("Registered Send packet with id={}, type={}", self.next_send_id, type_name::<T>());
+        debug!("Registered Send packet with id={}, type={}", self.next_send_id, type_name::<T>());
         self.next_send_id += 1;
         Ok(())
     }
@@ -517,7 +517,7 @@ impl PacketManager {
         if res.is_empty() {
             return Ok(None);
         }
-        println!("Fetched {} received packets of type={}, id={}, from addr={}", res.len(), type_name::<T>(), id, addr);
+        debug!("Fetched {} received packets of type={}, id={}, from addr={}", res.len(), type_name::<T>(), id, addr);
         Ok(Some(res))
     }
     
@@ -668,12 +668,12 @@ impl PacketManager {
         let (addr, send_streams) = &send_streams[send_index];
         let mut send_stream = send_streams.get(id).unwrap().write().await;
         // TODO: Make trace log
-        println!("Sending bytes to {} with len {}", addr, bytes.len());
+        debug!("Sending bytes to {} with len {}", addr, bytes.len());
         trace!("Sending bytes {:?}", bytes);
         send_stream.write_chunk(bytes).await.unwrap();
         trace!("Sending FRAME_BOUNDARY");
         send_stream.write_all(FRAME_BOUNDARY).await.unwrap();
-        println!("Sent packet to {} with id={}, type={}", addr, id, type_name::<T>());
+        debug!("Sent packet to {} with id={}, type={}", addr, id, type_name::<T>());
         Ok(())
     }
     
@@ -726,7 +726,7 @@ impl PacketManager {
         if bytes.is_empty() {
             return Err(ReceiveError::new(format!("Received empty bytes for packet type={}!", type_name::<T>())));
         }
-        println!("Received packet #{} for type {}", res.len(), type_name::<T>());
+        debug!("Received packet with id={} for type={}", res.len(), type_name::<T>());
         let packet = packet_builder.read(bytes).unwrap();
         res.push(packet);
         Ok(())

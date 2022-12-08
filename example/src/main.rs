@@ -55,7 +55,7 @@ fn sync_example() {
     let client_addr = "127.0.0.1:5001";
     let server_addr = "127.0.0.1:5000";
     
-    /// Server example
+    // Server example
     let mut server_manager = PacketManager::new();
     // Register `receive` and `send` packets
     server_manager.register_receive_packet::<Position>(PositionPacketBuilder).unwrap();
@@ -71,7 +71,7 @@ fn sync_example() {
     // to block on.
     server_manager.init_connections(true, 3, 2, server_addr, None, 0, Some(1)).unwrap();
     
-    /// Client example
+    // Client example
     let mut client_manager = PacketManager::new();
     // Register `receive` and `send` packets.  
     // Note: these must be in the same order for opposite channels as the server.
@@ -87,7 +87,7 @@ fn sync_example() {
     client_manager.init_connections(false, 2, 3, server_addr, Some(client_addr), 0, None).unwrap();
     
     
-    /// Below we show different ways to send/receive packets
+    // Below we show different ways to send/receive packets
     
     // broadcast packets to all recipients, and receive all packets from sender
     server_manager.broadcast(OtherPosition { x: 0, y: 1 }).unwrap();
@@ -121,7 +121,7 @@ fn sync_example() {
     println!("{:?}", server_ack_packets);
     
     
-    /// Single client-server relationship when you know there is only 1 sender and 1 recipient
+    // Single client-server relationship when you know there is only 1 sender and 1 recipient
     
     // Send packets using send() and received(), which should only be used if there is only a single
     // recipient and transmitter
@@ -136,7 +136,7 @@ async fn async_sync_example() {
     let client_addr = "127.0.0.1:5001";
     let server_addr = "127.0.0.1:5000";
 
-    /// Server example
+    // Server example
     let mut server_manager = PacketManager::new_for_async();
     // Register `receive` and `send` packets
     server_manager.register_receive_packet::<Position>(PositionPacketBuilder).unwrap();
@@ -168,7 +168,7 @@ async fn async_sync_example() {
     client_manager.async_init_connections(false, 2, 3, server_addr, Some(client_addr), 0, None).await.unwrap();
 
 
-    /// Below we show different ways to send/receive packets
+    // Below we show different ways to send/receive packets
 
     // broadcast packets to all recipients, and receive all packets from sender
     server_manager.async_broadcast(OtherPosition { x: 0, y: 1 }).await.unwrap();
@@ -202,7 +202,7 @@ async fn async_sync_example() {
     println!("{:?}", server_ack_packets);
 
 
-    /// Single client-server relationship when you know there is only 1 sender and 1 recipient
+    // Single client-server relationship when you know there is only 1 sender and 1 recipient
 
     // Send packets using send() and received(), which should only be used if there is only a single
     // recipient and transmitter
