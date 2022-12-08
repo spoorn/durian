@@ -7,3 +7,4 @@ edition = "2021"
 
 [dependencies]
 durian = { path = "../durian" }
+tokio = { version = "1.21.2", features = ["full"] }

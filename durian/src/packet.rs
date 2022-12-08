@@ -396,7 +396,7 @@ impl PacketManager {
         Ok(rxs)
     }
     
-    pub fn register_receive_packet<T: Packet + 'static>(&mut self, packet_builder: impl PacketBuilder<T> + 'static + Sync + Send + Copy) -> Result<(), ReceiveError> {
+    pub fn register_receive_packet<T: Packet + 'static>(&mut self, packet_builder: impl PacketBuilder<T> + 'static + Sync + Send) -> Result<(), ReceiveError> {
         self.validate_packet_is_new::<T>(false)?;
         let packet_type_id = TypeId::of::<T>();
         self.receive_packets.insert(self.next_receive_id, packet_type_id);
@@ -770,7 +770,7 @@ mod tests {
     }
 
     // TODO: Test sync versions
-    // TODO: flaky, need to validate entire packet sequence likek tests below or race condition can happen and validations fail
+    // TODO: flaky, need to validate entire packet sequence like tests below or race condition can happen and validations fail
     #[tokio::test]
     async fn receive_packet_e2e_async() {
         let mut manager = PacketManager::new_for_async();
