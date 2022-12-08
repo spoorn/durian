@@ -1,5 +1,5 @@
 # Overview
-_"You either love it, hate it, or never heard of it.  There is no in between"_
+_"You either love it, hate it, or never heard of it."_
 
 `durian` is a client-server networking library built on top of the [QUIC](https://en.wikipedia.org/wiki/QUIC) protocol which is
 implemented in Rust by [quinn](https://github.com/quinn-rs/quinn).
