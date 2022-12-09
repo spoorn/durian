@@ -16,6 +16,7 @@ readme = "README.md"
 [lib]
 name = "durian_macros"
 proc-macro = true
+doctest = false
 
 [dependencies]
 proc-macro2 = "1.0"

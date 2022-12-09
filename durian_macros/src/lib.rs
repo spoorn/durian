@@ -1,4 +1,4 @@
-//! Macros for the [`durian`](https://docs.rs/durian/latest/durian/) crate
+//! Macros for the [durian](https://docs.rs/durian/latest/durian/) crate
 //! 
 //! Contains macros for easily annotating structs as [`Packets`](https://docs.rs/durian/latest/durian/trait.Packet.html) and automatically
 //! implementing [`PacketBuilders`](https://docs.rs/durian/latest/durian/trait.PacketBuilder.html). The only

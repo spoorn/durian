@@ -240,7 +240,6 @@ impl PacketManager {
                     self.source_addr = client_addr.unwrap();
                     client_addr = Some(self.source_addr.clone());
                 }
-                // TODO: this isn't so great, we can refactor to create static methods that don't require mutable ref to self, and use those instead later on
                 runtime.block_on(PacketManager::async_init_connections_helper(is_server, num_incoming_streams, num_outgoing_streams, server_addr, client_addr,
                                                                                         wait_for_clients, expected_num_clients, &self.runtime, &self.new_send_streams, &self.new_rxs,
                                                                                         &self.client_connections, &mut self.server_connection))
@@ -285,7 +284,7 @@ impl PacketManager {
         Ok(())
     }
 
-        // TODO: validate number of streams against registered packets 
+    // TODO: validate number of streams against registered packets 
     async fn async_init_connections_helper<S: Into<String>>(is_server: bool, num_incoming_streams: u32, num_outgoing_streams: u32, 
                                                             server_addr: S, mut client_addr: Option<S>, wait_for_clients: u32, 
                                                             expected_num_clients: Option<u32>, runtime: &Arc<Option<Runtime>>,
@@ -535,8 +534,15 @@ impl PacketManager {
         self.source_addr.to_string()
     }
     
+    /// Register a [`Packet`] on a `receive` stream/channel, and its associated [`PacketBuilder`]
+    /// 
+    /// # Error
+    /// Returns a [`ReceiveError`] if registration failed.
     pub fn register_receive_packet<T: Packet + 'static>(&mut self, packet_builder: impl PacketBuilder<T> + 'static + Sync + Send) -> Result<(), ReceiveError> {
-        self.validate_packet_is_new::<T>(false)?;
+        if self.receive_packets.contains_right(&TypeId::of::<T>()) {
+            return Err(ReceiveError::new(format!("Type '{}' was already registered as a Receive packet", type_name::<T>())))
+        }
+        
         let packet_type_id = TypeId::of::<T>();
         self.receive_packets.insert(self.next_receive_id, packet_type_id);
         self.recv_packet_builders.insert(packet_type_id, Box::new(packet_builder));
@@ -544,9 +550,16 @@ impl PacketManager {
         self.next_receive_id += 1;
         Ok(())
     }
-    
-    pub fn register_send_packet<T: Packet + 'static>(&mut self) -> Result<(), ReceiveError> {
-        self.validate_packet_is_new::<T>(true)?;
+
+    /// Register a [`Packet`] on a `send` stream/channel
+    ///
+    /// # Error
+    /// Returns a [`SendError`] if registration failed.
+    pub fn register_send_packet<T: Packet + 'static>(&mut self) -> Result<(), SendError> {
+        if self.send_packets.contains_right(&TypeId::of::<T>()) {
+            return Err(SendError::new(format!("Type '{}' was already registered as a Send packet", type_name::<T>())))
+        }
+
         self.send_packets.insert(self.next_send_id, TypeId::of::<T>());
         debug!("Registered Send packet with id={}, type={}", self.next_send_id, type_name::<T>());
         self.next_send_id += 1;
@@ -664,8 +677,10 @@ impl PacketManager {
         if !for_all && self.has_more_than_one_remote() {
             return Err(ReceiveError::new(format!("async_received()/received() was called for packet {}, but there is more than one client.  Did you mean to call async_received_all()/received_all()?", type_name::<T>())))
         }
-
-        self.validate_packet_was_registered::<T>(false)?;
+        
+        if !self.receive_packets.contains_right(&TypeId::of::<T>()) {
+            return Err(ReceiveError::new(format!("Type '{}' was never registered!  Did you forget to call register_receive_packet()?", type_name::<T>())))
+        }
         Ok(None)
     }
 
@@ -673,8 +688,10 @@ impl PacketManager {
         if !for_all && self.async_has_more_than_one_remote().await {
             return Err(ReceiveError::new(format!("async_received()/received() was called for packet {}, but there is more than one client.  Did you mean to call async_received_all()/received_all()?", type_name::<T>())))
         }
-
-        self.validate_packet_was_registered::<T>(false)?;
+        
+        if !self.receive_packets.contains_right(&TypeId::of::<T>()) {
+            return Err(ReceiveError::new(format!("Type '{}' was never registered!  Did you forget to call register_receive_packet()?", type_name::<T>())))
+        }
         Ok(None)
     }
     
@@ -695,6 +712,7 @@ impl PacketManager {
     }
     
     pub fn broadcast<T: Packet + 'static>(&mut self, packet: T) -> Result<(), SendError> {
+        self.validate_for_send::<T>(true)?;
         self.update_new_senders();
         match self.runtime.as_ref() {
             None => {
@@ -716,6 +734,7 @@ impl PacketManager {
         if self.runtime.is_some() {
             panic!("PacketManager has a runtime instance associated with it.  If you are using async_send(), make sure you create the PacketManager using new_async(), not new()");
         }
+        self.async_validate_for_send::<T>(true).await?;
         self.async_update_new_senders().await;
         let send_streams_len = self.send_streams.len();
         for send_index in 0..send_streams_len {
@@ -725,7 +744,7 @@ impl PacketManager {
     }
 
     pub fn send<T: Packet + 'static>(&mut self, packet: T) -> Result<(), SendError> {
-        self.validate_for_send::<T>()?;
+        self.validate_for_send::<T>(false)?;
         self.update_new_senders();
         match self.runtime.as_ref() {
             None => {
@@ -741,12 +760,13 @@ impl PacketManager {
         if self.runtime.is_some() {
             panic!("PacketManager has a runtime instance associated with it.  If you are using async_send(), make sure you create the PacketManager using new_async(), not new()");
         }
-        self.async_validate_for_send::<T>().await?;
+        self.async_validate_for_send::<T>(false).await?;
         self.async_update_new_senders().await;
         PacketManager::async_send_helper::<T>(&packet, 0, &self.send_packets, &self.send_streams).await
     }
 
     pub fn send_to<T: Packet + 'static>(&mut self, addr: impl Into<String>, packet: T) -> Result<(), SendError> {
+        self.validate_for_send::<T>(true)?;
         self.update_new_senders();
         match self.runtime.as_ref() {
             None => {
@@ -769,6 +789,7 @@ impl PacketManager {
         if self.runtime.is_some() {
             panic!("PacketManager has a runtime instance associated with it.  If you are using async_send(), make sure you create the PacketManager using new_async(), not new()");
         }
+        self.async_validate_for_send::<T>(true).await?;
         self.async_update_new_senders().await;
         let send_index = if self.server_connection.is_some() {
             // We are the client sending to a single server
@@ -806,7 +827,6 @@ impl PacketManager {
         let id = send_packets.get_by_right(&packet_type_id).unwrap();
         let (addr, send_streams) = &send_streams[send_index];
         let mut send_stream = send_streams.get(id).unwrap().write().await;
-        // TODO: Make trace log
         debug!("Sending bytes to {} with len {}", addr, bytes.len());
         trace!("Sending bytes {:?}", bytes);
         send_stream.write_chunk(bytes).await.unwrap();
@@ -824,39 +844,27 @@ impl PacketManager {
         self.client_connections.blocking_read().get(&addr.into()).unwrap().0
     }
     
-    fn validate_for_send<T: Packet + 'static>(&self) -> Result<(), SendError> {
-        if self.has_more_than_one_remote() {
+    fn validate_for_send<T: Packet + 'static>(&self, for_all: bool) -> Result<(), SendError> {
+        if !for_all && self.has_more_than_one_remote() {
             return Err(SendError::new(format!("send() was called for packet {}, but there is more than one client.  Did you mean to call broadcast()?", type_name::<T>())))
+        }
+
+        if !self.send_packets.contains_right(&TypeId::of::<T>()) {
+            return Err(SendError::new(format!("Type '{}' was never registered!  Did you forget to call register_send_packet()?", type_name::<T>())))
         }
         
         Ok(())
     }
 
-    async fn async_validate_for_send<T: Packet + 'static>(&self) -> Result<(), SendError> {
-        if self.async_has_more_than_one_remote().await {
+    async fn async_validate_for_send<T: Packet + 'static>(&self, for_all: bool) -> Result<(), SendError> {
+        if !for_all && self.async_has_more_than_one_remote().await {
             return Err(SendError::new(format!("async_send() was called for packet {}, but there is more than one client.  Did you mean to call async_broadcast()?", type_name::<T>())))
         }
 
-        Ok(())
-    }
-    
-    fn validate_packet_is_new<T: Packet + 'static>(&self, is_send: bool) -> Result<(), ReceiveError> {
-        if (is_send && self.send_packets.contains_right(&TypeId::of::<T>())) || !is_send && self.receive_packets.contains_right(&TypeId::of::<T>()) {
-            return Err(ReceiveError::new(format!("Type '{}' was already registered!", type_name::<T>())))
-        } 
-        Ok(())
-    }
-    
-    fn validate_packet_was_registered<T: Packet + 'static>(&self, is_send: bool) -> Result<(), ReceiveError> {
-        if is_send {
-            if !self.send_packets.contains_right(&TypeId::of::<T>()) {
-                return Err(ReceiveError::new(format!("Type '{}' was never registered!  Did you forget to call register_send_packet()?", type_name::<T>())))
-            }
-        } else {
-            if !self.receive_packets.contains_right(&TypeId::of::<T>()) {
-                return Err(ReceiveError::new(format!("Type '{}' was never registered!  Did you forget to call register_receive_packet()?", type_name::<T>())))
-            }
+        if !self.send_packets.contains_right(&TypeId::of::<T>()) {
+            return Err(SendError::new(format!("Type '{}' was never registered!  Did you forget to call register_send_packet()?", type_name::<T>())))
         }
+
         Ok(())
     }
     
@@ -1492,14 +1500,5 @@ mod tests {
         println!("send client2 exit");
         client2_tx.send(0).await.unwrap();
         assert!(client2.await.is_ok());
-    }
-
-    #[test]
-    fn test_register_send_packet() {
-        let mut manager = PacketManager::new();
-        assert!(manager.validate_packet_is_new::<Test>(true).is_ok());
-        assert!(manager.register_send_packet::<Test>().is_ok());
-        assert!(manager.validate_packet_is_new::<Test>(true).is_err());
-        assert!(manager.register_send_packet::<Test>().is_err());
     }
 }
