@@ -229,7 +229,7 @@ impl ServerConfig {
         }
     }
 
-    /// Construct and return a new [`ServerConfig`], with [`total_expected_clients`] set to `None` so the server
+    /// Construct and return a new [`ServerConfig`], with [`total_expected_clients`](`ServerConfig::total_expected_clients`) set to `None` so the server
     /// continuously accepts new client connections
     pub fn new_listening<S: Into<String>>(addr: S, wait_for_clients: u32, num_receive_streams: u32, num_send_streams: u32) -> Self {
         ServerConfig {
