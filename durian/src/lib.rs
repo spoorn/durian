@@ -1,4 +1,4 @@
-//! _"You either love it, hate it, or never heard of it."_
+//! _"This library stinks!" ... "Unless you like durian!"_
 //! 
 //! `durian` is a client-server networking library built on top of the [QUIC](https://en.wikipedia.org/wiki/QUIC) protocol which is 
 //! implemented in Rust by [quinn](https://github.com/quinn-rs/quinn).
@@ -154,6 +154,10 @@
 //! }
 //! ```
 //! 
+//! # durian_macros
+//! 
+//! Rust docs don't properly link documentation of re-exported crates.  If you want to learn more about how the
+//! [`bincode_packet`] and other macros used above work, see the [`durian_macros`] docs.
 //! 
 //! # Examples
 //! 
@@ -177,6 +181,7 @@ mod packet;
 
 pub use packet::*;
 
+#[doc(inline)]
 #[allow(unused_imports)]
 pub use durian_macros;
 

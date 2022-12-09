@@ -1,7 +1,7 @@
-//! Macros for the [`durian`] crate
+//! Macros for the [`durian`](https://docs.rs/durian/latest/durian/) crate
 //! 
-//! Contains macros for easily annotating structs as [`Packets`](`durian::Packet`) and automatically
-//! implementing [`PacketBuilders`](`durian::PacketBuilder`). The only
+//! Contains macros for easily annotating structs as [`Packets`](https://docs.rs/durian/latest/durian/trait.Packet.html) and automatically
+//! implementing [`PacketBuilders`](https://docs.rs/durian/latest/durian/trait.PacketBuilder.html). The only
 //! requirement is the struct must be de/serializable, meaning all nested fields also need to be
 //! de/serializable.
 //! 
@@ -45,6 +45,28 @@ use proc_macro2::{Ident, Span};
 use quote::quote;
 use syn::{Data, DataStruct, Fields, parse_macro_input, DeriveInput};
 
+/// Macros for easy creation of [`Packets`](https://docs.rs/durian/latest/durian/trait.Packet.html) and [`PacketBuilders`](https://docs.rs/durian/latest/durian/trait.PacketBuilder.html)
+/// 
+/// For example:
+/// 
+/// ```rust
+/// #[bincode_packet]
+/// struct Position {
+///     x: i32,
+///     y: i32
+/// }
+/// ```
+///
+/// Generates this code:
+/// 
+/// ```rust
+/// #[derive(Serialize, Deserialize, BinPacket)]
+/// #[serde(crate = "durian::serde")]
+/// struct Position {
+///     x: i32,
+///     y: i32
+/// }
+/// ```
 #[proc_macro_attribute]
 pub fn bincode_packet(_attr: TokenStream, tokens: TokenStream) -> TokenStream {
     let input = parse_macro_input!(tokens as DeriveInput);
@@ -76,6 +98,37 @@ pub fn bincode_packet(_attr: TokenStream, tokens: TokenStream) -> TokenStream {
     };
 }
 
+/// derive macro to automatically implement [`Packet`](https://docs.rs/durian/latest/durian/trait.Packet.html) and [`PacketBuilder`](https://docs.rs/durian/latest/durian/trait.PacketBuilder.html)
+/// for a struct.
+/// 
+/// For example:
+/// 
+/// ```rust
+/// #[derive(BinPacket)]
+/// struct Position {
+///     x: i32,
+///     y: i32
+/// }
+/// ```
+/// 
+/// Generates this code:
+/// 
+/// ```rust
+/// impl durian::Packet for Position {
+///     fn as_bytes(&self) -> durian::bytes::Bytes {
+///         durian::bytes::Bytes::from(durian::bincode::serialize(self).unwrap())
+///     }
+/// }
+/// 
+/// #[derive(Copy, Clone)]
+/// pub struct PositionPacketBuilder;
+/// impl durian::PacketBuilder<Position> for PositionPacketBuilder {
+/// 
+///     fn read(&self, bytes: durian::bytes::Bytes) -> Result<Position, Box<dyn std::error::Error>> {
+///         Ok(durian::bincode::deserialize(bytes.as_ref()).unwrap())
+///     }
+/// }
+/// ```
 #[proc_macro_derive(BinPacket)]
 pub fn bin_packet(tokens: TokenStream) -> TokenStream {
     let input = parse_macro_input!(tokens as DeriveInput);
@@ -100,6 +153,33 @@ pub fn bin_packet(tokens: TokenStream) -> TokenStream {
     }.into();
 }
 
+/// Same as [`BinPacket`] but for empty or Unit structs
+/// 
+/// For example:
+/// 
+/// ```rust
+/// #[derive(UnitPacket)]
+/// struct Ack;
+/// ```
+/// 
+/// Generates this code:
+/// 
+/// ```rust
+/// impl durian::Packet for Ack {
+///     fn as_bytes(&self) -> durian::bytes::Bytes {
+///         durian::bytes::Bytes::from("Ack")
+///     }
+/// }
+/// 
+/// #[derive(Copy, Clone)]
+/// pub struct AckPacketBuilder;
+/// impl durian::PacketBuilder<Ack> for AckPacketBuilder {
+/// 
+///     fn read(&self, bytes: durian::bytes::Bytes) -> Result<Ack, Box<dyn std::error::Error>> {
+///         Ok(Ack)
+///     }
+/// }
+/// ```
 #[proc_macro_derive(UnitPacket)]
 pub fn unit_packet(tokens: TokenStream) -> TokenStream {
     let input = parse_macro_input!(tokens as DeriveInput);
@@ -125,6 +205,9 @@ pub fn unit_packet(tokens: TokenStream) -> TokenStream {
     }.into();
 }
 
+/// Implements a `new()` function for a struct that contains only a `message: String` field
+/// 
+/// Not really for public use.  Used internally for errors in the `durian` crate.
 #[proc_macro_derive(ErrorOnlyMessage)]
 pub fn error_only_message(tokens: TokenStream) -> TokenStream {
     let input = parse_macro_input!(tokens as DeriveInput);

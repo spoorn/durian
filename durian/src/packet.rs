@@ -21,34 +21,125 @@ use crate::quinn_helpers::{make_client_endpoint, make_server_endpoint};
 
 const FRAME_BOUNDARY: &[u8] = b"AAAAAA031320050421";
 
+/// Packet trait that allows a struct to be sent through [`PacketManager`], for serializing
+/// 
+/// This is automatically implemented if using the macros [`bincode_packet`](`durian_macros::bincode_packet`), 
+/// [`BinPacket`](`durian_macros::BinPacket`), or [`UnitPacket`](`durian_macros::UnitPacket`).
 pub trait Packet {
+    
+    /// Return a serialized form of the Packet as [`Bytes`]
     fn as_bytes(&self) -> Bytes;
     
     // https://stackoverflow.com/questions/33687447/how-to-get-a-reference-to-a-concrete-type-from-a-trait-object
     // fn as_any(self: Self) -> Box<dyn Any>;
 }
 
+/// PacketBuilder is the deserializer for [`Packet`] and used when [`PacketManager`] receives bytes
+///
+/// This is automatically implemented if using the macros [`bincode_packet`](`durian_macros::bincode_packet`), 
+/// [`BinPacket`](`durian_macros::BinPacket`), or [`UnitPacket`](`durian_macros::UnitPacket`).
 pub trait PacketBuilder<T: Packet> {
     
+    /// Deserializes [`Bytes`] into the [`Packet`] this PacketBuilder is implemented for
+    /// 
+    /// # Error
+    /// Returns an error if deserializing fails
     fn read(&self, bytes: Bytes) -> Result<T, Box<dyn Error>>;
 }
 
+/// Error when calling [`PacketManager::init_connections()`] or [`PacketManager::async_init_connections()`]
 #[derive(Debug, Clone, Display, ErrorOnlyMessage)]
 pub struct ConnectionError {
-    message: String
+    /// Error message
+    pub message: String
 }
 
+/// Error when calling [`PacketManager::register_receive_packet()`], [`PacketManager::received_all()`],
+/// [`PacketManager::async_received_all()`], [`PacketManager::received()`], [`PacketManager::async_received()`]
 #[derive(Debug, Clone, Display, ErrorOnlyMessage)]
 pub struct ReceiveError {
-    message: String
+    /// Error message
+    pub message: String
 }
 
+/// Error when calling [`PacketManager::register_send_packet()`], [`PacketManager::broadcast()`],
+/// [`PacketManager::async_broadcast()`], [`PacketManager::send()`], [`PacketManager::async_send()`],
+/// [`PacketManager::send_to()`], [`PacketManager::async_send_to()`]
 #[derive(Debug, Clone, Display, ErrorOnlyMessage)]
 pub struct SendError {
-    message: String
+    /// Error message
+    pub message: String
 }
 
-// TODO: Document that same runtime must be used for a PacketManager instance due to channels
+/// The core of `durian` that is the central struct containing all the necessary APIs for initiating and managing
+/// connections, creating streams, sending [`Packets`](`Packet`), receiving, broadcasting, etc.
+/// 
+/// A `PacketManager` would be created on each client to connect to a
+/// single server, and one created on the server to connect to multiple clients. It contains both 
+/// synchronous and asynchronous APIs, so you can call the functions both from a synchronous 
+/// context, or within an async runtime (_Note: the synchronous path will create a separate 
+/// isolated async runtime context per `PacketManager` instance._)
+///
+/// There are 4 basic steps to using the `PacketManager`, which would be done on both the client
+/// and server side:
+///
+/// 1. Create a `PacketManager` via [`new()`](`PacketManager::new()`) or, if calling from an async context, [`new_for_async()`](`PacketManager::new_for_async()`)
+///
+/// 2. Register the [`Packets`](`Packet`) and [`PacketBuilders`](`PacketBuilder`) that the `PacketManager` will __receive__
+/// and __send__ using [`register_receive_packet()`](`PacketManager::register_receive_packet()`) and [`register_send_packet()`](`PacketManager::register_send_packet()`).  
+/// The ordering of `Packet` registration matters for the `receive` channel and
+/// `send` channel each - the client and server must register the same packets in the same order,
+/// for the opposite channels.  
+///     - In other words, the client must register `receive` packets in the 
+/// same order the server registers the same as `send` packets, and vice versa, the client must
+/// register `send` packets in the same order the server registers the same as `receive` packets.
+/// This helps to ensure the client and servers are in sync on what Packets to send/receive, almost
+/// like ensuring they are on the same "version" so to speak, and is used to properly identify
+/// Packets.
+///
+/// 3. Initiate a connection with [`init_connections()`](`PacketManager::init_connections()`) or the async variant
+/// [`async_init_connections()`](`PacketManager::async_init_connections()`)
+///
+/// 4. Send packets using any of [`broadcast()`](`PacketManager::broadcast()`), [`send()`](`PacketManager::send()`), [`send_to()`](`PacketManager::send_to()`)
+/// or the respective `async` variants if calling from an async context already.  Receive packets
+/// using any of [`received_all()`](`PacketManager::received_all()`) , [`received()`](`PacketManager::received()`), or the respective
+/// `async` variants.
+///
+/// # Example
+///
+/// ```rust
+/// use durian::PacketManager;
+/// use durian_macros::bincode_packet;
+///
+/// #[bincode_packet]
+/// struct Position { x: i32, y: i32 }
+/// #[bincode_packet]
+/// struct ServerAck;
+/// #[bincode_packet]
+/// struct ClientAck;
+/// #[bincode_packet]
+/// struct InputMovement { direction: String }
+///
+/// fn packet_manager_example() {
+///     // Create PacketManager
+///     let mut manager = PacketManager::new();
+///
+///     // Register send and receive packets
+///     manager.register_receive_packet::<Position>(PositionPacketBuilder).unwrap();
+///     manager.register_receive_packet::<ServerAck>(ServerAckPacketBuilder).unwrap();
+///     manager.register_send_packet::<ClientAck>().unwrap();
+///     manager.register_send_packet::<InputMovement>().unwrap();
+///
+///     // Initialize connection to an address
+///     manager.init_connections(true, 2, 2, "127.0.0.1:5000", Some("127.0.0.1:5001"), 0, None).unwrap();
+///
+///     // Send and receive packets
+///     manager.broadcast(InputMovement { direction: "North".to_string() }).unwrap();
+///     manager.received_all::<Position, PositionPacketBuilder>(false).unwrap();
+///
+///     // The above PacketManager is for the client.  Server side is similar except the packets
+///     // are swapped between receive vs send channels.
+/// }
 #[derive(Debug)]
 pub struct PacketManager {
     receive_packets: BiMap<u32, TypeId>,
@@ -74,6 +165,13 @@ pub struct PacketManager {
 
 impl PacketManager {
     
+    /// Create a new `PacketManager`
+    /// 
+    /// If calling from an asynchronous context/runtime, use the [`new_for_async()`](`PacketManager::new_for_async()`) variant.
+    /// This constructs a [`tokio Runtime`](`Runtime`) for the `PacketManager` instance.
+    /// 
+    /// # Panic
+    /// If the [`Runtime`] could not be created.  Usually happens if you call `new()` from an existing async runtime.
     pub fn new() -> Self {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -101,7 +199,10 @@ impl PacketManager {
             }
         }
     }
-    
+
+    /// Create a new `PacketManager`
+    ///
+    /// If calling from a synchronous context, use [`new()`](`PacketManager::new()`)
     pub fn new_for_async() -> Self {
         PacketManager {
             receive_packets: BiMap::new(),
