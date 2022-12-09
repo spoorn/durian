@@ -110,8 +110,9 @@
 //! like ensuring they are on the same "version" so to speak, and is used to properly identify
 //! Packets.
 //! 
-//! 3. Initiate a connection with [`init_connections()`](`PacketManager::init_connections()`) or the async variant
-//! [`async_init_connections()`](`PacketManager::async_init_connections()`)
+//! 3. Initiate connection(s) with [`init_client()`](`PacketManager::init_client()`) (or the async variant [`async_init_client()`](`PacketManager::async_init_client()`)
+//! if on the client side, else use [`init_server()`](`PacketManager::init_server()`) (or the async variant [`async_init_server)`](`PacketManager::async_init_server()`)
+//! if on the server side.
 //! 
 //! 4. Send packets using any of [`broadcast()`](`PacketManager::broadcast()`), [`send()`](`PacketManager::send()`), [`send_to()`](`PacketManager::send_to()`)
 //! or the respective `async` variants if calling from an async context already.  Receive packets
@@ -121,7 +122,7 @@
 //! Putting these together:
 //! 
 //! ```rust
-//! use durian::PacketManager;
+//! use durian::{ClientConfig, PacketManager};
 //! use durian_macros::bincode_packet;
 //!
 //! #[bincode_packet]
@@ -143,15 +144,33 @@
 //!     manager.register_send_packet::<ClientAck>().unwrap();
 //!     manager.register_send_packet::<InputMovement>().unwrap();
 //!
-//!     // Initialize connection to an address
-//!     manager.init_connections(true, 2, 2, "127.0.0.1:5000", Some("127.0.0.1:5001"), 0, None).unwrap();
+//!     // Initialize a client
+//!     let client_config = ClientConfig::new("127.0.0.1:5001", "127.0.0.1:5000", 2, 2);
+//!     manager.init_client(client_config).unwrap();
 //!
 //!     // Send and receive packets
 //!     manager.broadcast(InputMovement { direction: "North".to_string() }).unwrap();
 //!     manager.received_all::<Position, PositionPacketBuilder>(false).unwrap();
-//! 
+//!
 //!     // The above PacketManager is for the client.  Server side is similar except the packets
-//!     // are swapped between receive vs send channels.
+//!     // are swapped between receive vs send channels:
+//! 
+//!     // Create PacketManager
+//!     let mut server_manager = PacketManager::new();
+//!
+//!     // Register send and receive packets
+//!     server_manager.register_receive_packet::<ClientAck>(ClientAckPacketBuilder).unwrap();
+//!     server_manager.register_receive_packet::<InputMovement>(InputMovementPacketBuilder).unwrap();
+//!     server_manager.register_send_packet::<Position>().unwrap();
+//!     server_manager.register_send_packet::<ServerAck>().unwrap();
+//!
+//!     // Initialize a client
+//!     let client_config = ClientConfig::new("127.0.0.1:5001", "127.0.0.1:5000", 2, 2);
+//!     server_manager.init_client(client_config).unwrap();
+//!
+//!     // Send and receive packets
+//!     server_manager.broadcast(Position { x: 1, y: 3 }).unwrap();
+//!     server_manager.received_all::<InputMovement, InputMovementPacketBuilder>(false).unwrap();
 //! }
 //! ```
 //! 

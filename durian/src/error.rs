@@ -1,5 +1,7 @@
 use std::error::Error;
+use std::net::AddrParseError;
 use derive_more::Display;
+use quinn::ConnectError;
 use durian_macros::ErrorOnlyMessage;
 
 /// Error when calling [`PacketManager::register_receive_packet()`], [`PacketManager::received_all()`],
@@ -26,6 +28,19 @@ pub struct ConnectionError {
     pub message: String
 }
 
+impl From<quinn::ConnectionError> for ConnectionError {
+    fn from(e: quinn::ConnectionError) -> Self {
+       ConnectionError::new(format!("ConnectionError: {:?}", e))
+    }
+}
+
+impl From<Box<dyn Error>> for ConnectionError {
+
+    fn from(e: Box<dyn Error>) -> Self {
+        ConnectionError::new(format!("ConnectionError: {:?}", e))
+    }
+}
+
 impl From<quinn::ConnectionError> for Box<ConnectionError> {
     fn from(e: quinn::ConnectionError) -> Self {
         Box::new(ConnectionError::new(format!("ConnectionError: {:?}", e)))
@@ -33,8 +48,19 @@ impl From<quinn::ConnectionError> for Box<ConnectionError> {
 }
 
 impl From<Box<dyn Error>> for Box<ConnectionError> {
-    
     fn from(e: Box<dyn Error>) -> Self {
         Box::new(ConnectionError::new(format!("ConnectionError: {:?}", e)))
+    }
+}
+
+impl From<AddrParseError> for ConnectionError {
+    fn from(e: AddrParseError) -> Self {
+        ConnectionError::new(format!("ConnectionError: {:?}", e))
+    }
+}
+
+impl From<ConnectError> for ConnectionError {
+    fn from(e: ConnectError) -> Self {
+        ConnectionError::new(format!("ConnectionError: {:?}", e))
     }
 }

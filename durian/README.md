@@ -182,6 +182,23 @@ fn packet_manager_example() {
 
     // The above PacketManager is for the client.  Server side is similar except the packets
     // are swapped between receive vs send channels.
+   
+    // Create PacketManager
+    let mut server_manager = PacketManager::new();
+   
+    // Register send and receive packets
+    server_manager.register_receive_packet::<ClientAck>(ClientAckPacketBuilder).unwrap();
+    server_manager.register_receive_packet::<InputMovement>(InputMovementPacketBuilder).unwrap();
+    server_manager.register_send_packet::<Position>().unwrap();
+    server_manager.register_send_packet::<ServerAck>().unwrap();
+   
+    // Initialize a client
+    let client_config = ClientConfig::new("127.0.0.1:5001", "127.0.0.1:5000", 2, 2);
+    server_manager.init_client(client_config).unwrap();
+   
+    // Send and receive packets
+    server_manager.broadcast(Position { x: 1, y: 3 }).unwrap();
+    server_manager.received_all::<InputMovement, InputMovementPacketBuilder>(false).unwrap();
 }
 ```
 

@@ -83,7 +83,7 @@ pub trait PacketBuilder<T: Packet> {
 /// # Example
 ///
 /// ```rust
-/// use durian::PacketManager;
+/// use durian::{ClientConfig, PacketManager};
 /// use durian_macros::bincode_packet;
 ///
 /// #[bincode_packet]
@@ -105,16 +105,35 @@ pub trait PacketBuilder<T: Packet> {
 ///     manager.register_send_packet::<ClientAck>().unwrap();
 ///     manager.register_send_packet::<InputMovement>().unwrap();
 ///
-///     // Initialize connection to an address
-///     manager.init_connections(true, 2, 2, "127.0.0.1:5000", Some("127.0.0.1:5001"), 0, None).unwrap();
+///     // Initialize a client
+///     let client_config = ClientConfig::new("127.0.0.1:5001", "127.0.0.1:5000", 2, 2);
+///     manager.init_client(client_config).unwrap();
 ///
 ///     // Send and receive packets
 ///     manager.broadcast(InputMovement { direction: "North".to_string() }).unwrap();
 ///     manager.received_all::<Position, PositionPacketBuilder>(false).unwrap();
 ///
 ///     // The above PacketManager is for the client.  Server side is similar except the packets
-///     // are swapped between receive vs send channels.
+///     // are swapped between receive vs send channels:
+///
+///     // Create PacketManager
+///     let mut server_manager = PacketManager::new();
+///
+///     // Register send and receive packets
+///     server_manager.register_receive_packet::<ClientAck>(ClientAckPacketBuilder).unwrap();
+///     server_manager.register_receive_packet::<InputMovement>(InputMovementPacketBuilder).unwrap();
+///     server_manager.register_send_packet::<Position>().unwrap();
+///     server_manager.register_send_packet::<ServerAck>().unwrap();
+///
+///     // Initialize a client
+///     let client_config = ClientConfig::new("127.0.0.1:5001", "127.0.0.1:5000", 2, 2);
+///     server_manager.init_client(client_config).unwrap();
+///
+///     // Send and receive packets
+///     server_manager.broadcast(Position { x: 1, y: 3 }).unwrap();
+///     server_manager.received_all::<InputMovement, InputMovementPacketBuilder>(false).unwrap();
 /// }
+/// ```
 #[derive(Debug)]
 pub struct PacketManager {
     receive_packets: BiMap<u32, TypeId>,
@@ -153,6 +172,19 @@ pub struct ClientConfig {
     pub num_send_streams: u32
 }
 
+impl ClientConfig {
+    
+    /// Construct and return a new [`ClientConfig`]
+    pub fn new<S: Into<String>>(addr: S, server_addr: S, num_receive_streams: u32, num_send_streams: u32) -> Self {
+        ClientConfig {
+            addr: addr.into(),
+            server_addr: server_addr.into(),
+            num_receive_streams,
+            num_send_streams
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 /// Server configuration for spinning up a server on a socket address via [`PacketManager::init_server()`]
 pub struct ServerConfig {
@@ -171,6 +203,43 @@ pub struct ServerConfig {
     /// Number of `send` streams to open from client to server.  Must be equal to number of send packets registered
     /// through [`PacketManager::register_send_packet()`]
     pub num_send_streams: u32
+}
+
+impl ServerConfig {
+
+    /// Construct and return a new [`ServerConfig`]
+    pub fn new<S: Into<String>>(addr: S, wait_for_clients: u32, total_expected_clients: Option<u32>, num_receive_streams: u32, num_send_streams: u32) -> Self {
+        ServerConfig {
+            addr: addr.into(),
+            wait_for_clients,
+            total_expected_clients,
+            num_receive_streams,
+            num_send_streams
+        }
+    }
+
+    /// Construct and return a new [`ServerConfig`] that only allows up to `wait_for_clients` number of client connections
+    pub fn new_with_max_clients<S: Into<String>>(addr: S, wait_for_clients: u32, num_receive_streams: u32, num_send_streams: u32) -> Self {
+        ServerConfig {
+            addr: addr.into(),
+            wait_for_clients,
+            total_expected_clients: Some(wait_for_clients),
+            num_receive_streams,
+            num_send_streams
+        }
+    }
+
+    /// Construct and return a new [`ServerConfig`], with [`total_expected_clients`] set to `None` so the server
+    /// continuously accepts new client connections
+    pub fn new_listening<S: Into<String>>(addr: S, wait_for_clients: u32, num_receive_streams: u32, num_send_streams: u32) -> Self {
+        ServerConfig {
+            addr: addr.into(),
+            wait_for_clients,
+            total_expected_clients: None,
+            num_receive_streams,
+            num_send_streams
+        }
+    }
 }
 
 impl PacketManager {
@@ -230,59 +299,68 @@ impl PacketManager {
             runtime: Arc::new(None)
         }
     }
-
-    pub fn init_connections<S: Into<String>>(&mut self, is_server: bool, num_incoming_streams: u32, num_outgoing_streams: u32, server_addr: S, client_addr: Option<S>, wait_for_clients: u32, expected_num_clients: Option<u32>) -> Result<(), Box<dyn Error>> {
+    
+    pub fn init_client(&mut self, client_config: ClientConfig) -> Result<(), ConnectionError> {
         match self.runtime.as_ref() {
             None => {
                 panic!("PacketManager does not have a runtime instance associated with it.  Did you mean to call async_init_connection()?");
             }
             Some(runtime) => {
-                self.validate_connection_prereqs(is_server, &client_addr, num_incoming_streams, num_outgoing_streams)?;
-                let server_addr = server_addr.into();
-                let mut client_addr = if let Some(s) = client_addr {
-                    Some(s.into())
-                } else {
-                    None
-                };
-                if is_server {
-                    self.source_addr = server_addr.clone();
-                } else {
-                    self.source_addr = client_addr.unwrap();
-                    client_addr = Some(self.source_addr.clone());
-                }
-                runtime.block_on(PacketManager::async_init_connections_helper(is_server, num_incoming_streams, num_outgoing_streams, server_addr, client_addr,
-                                                                                        wait_for_clients, expected_num_clients, &self.runtime, &self.new_send_streams, &self.new_rxs,
-                                                                                        &self.client_connections, &mut self.server_connection))
+                self.validate_connection_prereqs(client_config.num_receive_streams, client_config.num_send_streams)?;
+                self.source_addr = client_config.addr.clone();
+                runtime.block_on(PacketManager::init_client_helper(client_config,
+                                                                              &self.runtime,
+                                                                               &self.new_rxs,
+                                                                               &self.new_send_streams, 
+                                                                              &mut self.server_connection))
+            }
+        }
+    }
+    
+    pub async fn async_init_client(&mut self, client_config: ClientConfig) -> Result<(), ConnectionError> {
+        if self.runtime.is_some() {
+            panic!("PacketManager has a runtime instance associated with it.  If you are using async_init_connections(), make sure you create the PacketManager using new_async(), not new()");
+        }
+        self.validate_connection_prereqs(client_config.num_receive_streams, client_config.num_send_streams)?;
+        self.source_addr = client_config.addr.clone();
+        PacketManager::init_client_helper(client_config,
+                                          &self.runtime,
+                                          &self.new_rxs,
+                                          &self.new_send_streams,
+                                          &mut self.server_connection).await
+    }
+
+    pub fn init_server(&mut self, server_config: ServerConfig) -> Result<(), ConnectionError> {
+        match self.runtime.as_ref() {
+            None => {
+                panic!("PacketManager does not have a runtime instance associated with it.  Did you mean to call async_init_connection()?");
+            }
+            Some(runtime) => {
+                self.validate_connection_prereqs(server_config.num_receive_streams, server_config.num_send_streams)?;
+                self.source_addr = server_config.addr.clone();
+                runtime.block_on(PacketManager::init_server_helper(server_config,
+                                                                   &self.runtime,
+                                                                   &self.new_rxs,
+                                                                   &self.new_send_streams,
+                                                                   &self.client_connections))
             }
         }
     }
 
-    pub async fn async_init_connections<S: Into<String>>(&mut self, is_server: bool, num_incoming_streams: u32, num_outgoing_streams: u32, server_addr: S, client_addr: Option<S>, wait_for_clients: u32, expected_num_clients: Option<u32>) -> Result<(), Box<dyn Error>> {
+    pub async fn async_init_server(&mut self, server_config: ServerConfig) -> Result<(), ConnectionError> {
         if self.runtime.is_some() {
             panic!("PacketManager has a runtime instance associated with it.  If you are using async_init_connections(), make sure you create the PacketManager using new_async(), not new()");
         }
-        self.validate_connection_prereqs(is_server, &client_addr, num_incoming_streams, num_outgoing_streams)?;
-        let server_addr = server_addr.into();
-        let mut client_addr = if let Some(s) = client_addr {
-            Some(s.into())
-        } else {
-            None
-        };
-        if is_server {
-            self.source_addr = server_addr.clone();
-        } else {
-            self.source_addr = client_addr.unwrap();
-            client_addr = Some(self.source_addr.clone());
-        }
-        PacketManager::async_init_connections_helper(is_server, num_incoming_streams, num_outgoing_streams, server_addr, client_addr, 
-                                                     wait_for_clients, expected_num_clients, &self.runtime, &self.new_send_streams, &self.new_rxs, 
-                                                     &self.client_connections, &mut self.server_connection).await
+        self.validate_connection_prereqs(server_config.num_receive_streams, server_config.num_send_streams)?;
+        self.source_addr = server_config.addr.clone();
+        PacketManager::init_server_helper(server_config,
+                                          &self.runtime,
+                                          &self.new_rxs,
+                                          &self.new_send_streams,
+                                          &self.client_connections).await
     }
     
-    fn validate_connection_prereqs<S: Into<String>>(&self, is_server: bool, client_addr: &Option<S>, num_incoming_streams: u32, num_outgoing_streams: u32) -> Result<(), ConnectionError> {
-        if !is_server && client_addr.is_none() {
-            return Err(ConnectionError::new("PacketManager is for client-side, but client_addr is None"));
-        }
+    fn validate_connection_prereqs(&self, num_incoming_streams: u32, num_outgoing_streams: u32) -> Result<(), ConnectionError> {
         let num_receive_packets = self.receive_packets.len() as u32;
         if num_receive_packets != num_incoming_streams {
             return Err(ConnectionError::new(format!("num_incoming_streams={} does not match number of registered receive packets={}.  Did you forget to call register_receive_packet()?", num_incoming_streams, num_receive_packets)));
@@ -296,9 +374,9 @@ impl PacketManager {
     
     async fn init_server_helper(server_config: ServerConfig,
                                 runtime: &Arc<Option<Runtime>>,
-                                new_send_streams: &Arc<RwLock<Vec<(String, HashMap<u32, RwLock<SendStream>>)>>>,
                                 new_rxs: &Arc<RwLock<Vec<(String, HashMap<u32, (RwLock<Receiver<Bytes>>, JoinHandle<()>)>)>>>,
-                                client_connections: &Arc<RwLock<HashMap<String, (u32, Connection)>>>) -> Result<(), Box<dyn Error>> {
+                                new_send_streams: &Arc<RwLock<Vec<(String, HashMap<u32, RwLock<SendStream>>)>>>,
+                                client_connections: &Arc<RwLock<HashMap<String, (u32, Connection)>>>) -> Result<(), ConnectionError> {
         debug!("Initiating server with {:?}", server_config);
 
         let (endpoint, server_cert) = make_server_endpoint(server_config.addr.parse()?)?;
@@ -316,7 +394,7 @@ impl PacketManager {
             }
             debug!("[server] connection accepted: addr={}", conn.remote_address());
             let (server_send_streams, recv_streams) = PacketManager::open_streams_for_connection(addr.to_string(), &conn, num_receive_streams, num_send_streams).await?;
-            let res = PacketManager::spawn_receive_thread(&addr.to_string(), recv_streams, runtime.as_ref()).unwrap();
+            let res = PacketManager::spawn_receive_thread(&addr.to_string(), recv_streams, runtime.as_ref())?;
             new_rxs.write().await.push((addr.to_string(), res));
             new_send_streams.write().await.push((addr.to_string(), server_send_streams));
             client_connections.write().await.insert(addr.to_string(), (i, conn));
@@ -388,7 +466,7 @@ impl PacketManager {
                                  runtime: &Arc<Option<Runtime>>,
                                  new_rxs: &Arc<RwLock<Vec<(String, HashMap<u32, (RwLock<Receiver<Bytes>>, JoinHandle<()>)>)>>>,
                                  new_send_streams: &Arc<RwLock<Vec<(String, HashMap<u32, RwLock<SendStream>>)>>>,
-                                 server_connection: &mut Option<Connection>) -> Result<(), Box<dyn Error>> {
+                                 server_connection: &mut Option<Connection>) -> Result<(), ConnectionError> {
         debug!("Initiating client with {:?}", client_config);
         // Bind this endpoint to a UDP socket on the given client address.
         let endpoint = make_client_endpoint(client_config.addr.parse()?, &[])?;
@@ -402,123 +480,6 @@ impl PacketManager {
         new_rxs.write().await.push((addr.to_string(), res));
         new_send_streams.write().await.push((addr.to_string(), client_send_streams));
         let _ = server_connection.insert(conn);
-        Ok(())
-    }
-
-    // TODO: validate number of streams against registered packets 
-    async fn async_init_connections_helper<S: Into<String>>(is_server: bool, num_incoming_streams: u32, num_outgoing_streams: u32, 
-                                                            server_addr: S, mut client_addr: Option<S>, wait_for_clients: u32, 
-                                                            expected_num_clients: Option<u32>, runtime: &Arc<Option<Runtime>>,
-                                                            new_send_streams: &Arc<RwLock<Vec<(String, HashMap<u32, RwLock<SendStream>>)>>>,
-                                                            new_rxs: &Arc<RwLock<Vec<(String, HashMap<u32, (RwLock<Receiver<Bytes>>, JoinHandle<()>)>)>>>,
-                                                            client_connections: &Arc<RwLock<HashMap<String, (u32, Connection)>>>,
-                                                            server_connection: &mut Option<Connection>) -> Result<(), Box<dyn Error>> {
-        // if expected_num_accepts_uni != self.next_receive_id {
-        //     return Err(Box::new(ConnectionError::new("expected_num_accepts_uni does not match number of registered receive packets")));
-        // }
-        
-        let client_addr = match client_addr.take() {
-            None => { "None".to_string() }
-            Some(s) => { s.into() }
-        };
-        let server_addr = server_addr.into();
-        debug!("Initiating connection with is_server={}, num_incoming_streams={}, num_outgoing_streams={}, server_addr={}, client_addr={}", is_server, num_incoming_streams, num_outgoing_streams, server_addr, client_addr);
-        // TODO: assert num streams equals registered
-        let server_addr = server_addr.parse().unwrap();
-        
-        if is_server {
-            let (endpoint, server_cert) = make_server_endpoint(server_addr)?;
-
-            // TODO: use synchronous blocks during read and write of client_connections
-            // Single connection
-            for i in 0..wait_for_clients {
-                let incoming_conn = endpoint.accept().await.unwrap();
-                let conn = incoming_conn.await.unwrap();
-                let addr = conn.remote_address();
-                if client_connections.read().await.contains_key(&addr.to_string()) {
-                    panic!("Client with addr={} was already connected", addr);
-                }
-                debug!("[server] connection accepted: addr={}", conn.remote_address());
-                let (server_send_streams, recv_streams) = PacketManager::open_streams_for_connection(addr.to_string(), &conn, num_incoming_streams, num_outgoing_streams).await?;
-                let res = PacketManager::spawn_receive_thread(&addr.to_string(), recv_streams, runtime.as_ref()).unwrap();
-                new_rxs.write().await.push((addr.to_string(), res));
-                new_send_streams.write().await.push((addr.to_string(), server_send_streams));
-                client_connections.write().await.insert(addr.to_string(), (i, conn));
-            }
-            
-            if expected_num_clients.is_none() || expected_num_clients.unwrap() > wait_for_clients {
-                let client_connections = client_connections.clone();
-                let arc_send_streams = new_send_streams.clone();
-                let arc_rx = new_rxs.clone();
-                let arc_runtime = Arc::clone(runtime);
-                let mut client_id = wait_for_clients;
-                let accept_client_task = async move {
-                    match expected_num_clients {
-                        None => {
-                            loop {
-                                debug!("[server] Waiting for more clients...");
-                                let incoming_conn = endpoint.accept().await.unwrap();
-                                let conn = incoming_conn.await.unwrap();
-                                let addr = conn.remote_address();
-                                if client_connections.read().await.contains_key(&addr.to_string()) {
-                                    panic!("Client with addr={} was already connected", addr);
-                                }
-                                debug!("[server] connection accepted: addr={}", conn.remote_address());
-                                let (send_streams, recv_streams) = PacketManager::open_streams_for_connection(addr.to_string(), &conn, num_incoming_streams, num_outgoing_streams).await.unwrap();
-                                let res = PacketManager::spawn_receive_thread(&addr.to_string(), recv_streams, arc_runtime.as_ref()).unwrap();
-                                arc_rx.write().await.push((addr.to_string(), res));
-                                arc_send_streams.write().await.push((addr.to_string(), send_streams));
-                                client_connections.write().await.insert(addr.to_string(), (client_id, conn));
-                                client_id += 1;
-                            }
-                        }
-                        Some(expected_num_clients) => {
-                            for i in 0..(expected_num_clients - wait_for_clients) {
-                                debug!("[server] Waiting for client #{}", i + wait_for_clients);
-                                let incoming_conn = endpoint.accept().await.unwrap();
-                                let conn = incoming_conn.await.unwrap();
-                                let addr = conn.remote_address();
-                                if client_connections.read().await.contains_key(&addr.to_string()) {
-                                    panic!("Client with addr={} was already connected", addr);
-                                }
-                                debug!("[server] connection accepted: addr={}", conn.remote_address());
-                                let (send_streams, recv_streams) = PacketManager::open_streams_for_connection(addr.to_string(), &conn, num_incoming_streams, num_outgoing_streams).await.unwrap();
-                                let res = PacketManager::spawn_receive_thread(&addr.to_string(), recv_streams, arc_runtime.as_ref()).unwrap();
-                                arc_rx.write().await.push((addr.to_string(), res));
-                                arc_send_streams.write().await.push((addr.to_string(), send_streams));
-                                client_connections.write().await.insert(addr.to_string(), (client_id, conn));
-                                client_id += 1;
-                            }
-                        }
-                    }
-                    Ok::<(), Box<ConnectionError>>(())
-                };
-
-                // TODO: save this value
-                let accept_client_thread = match runtime.as_ref() {
-                    None => {
-                        tokio::spawn(accept_client_task)
-                    }
-                    Some(runtime) => {
-                        runtime.spawn(accept_client_task)
-                    }
-                };
-            }
-        } else {
-            // Bind this endpoint to a UDP socket on the given client address.
-            let endpoint = make_client_endpoint(client_addr.parse().unwrap(), &[])?;
-
-            // Connect to the server passing in the server name which is supposed to be in the server certificate.
-            let conn = endpoint.connect(server_addr, "hostname")?.await?;
-            let addr = conn.remote_address();
-            debug!("[client] connected: addr={}", addr);
-            let (client_send_streams, recv_streams) = PacketManager::open_streams_for_connection(addr.to_string(), &conn, num_incoming_streams, num_outgoing_streams).await?;
-            let res = PacketManager::spawn_receive_thread(&addr.to_string(), recv_streams, runtime.as_ref()).unwrap();
-            new_rxs.write().await.push((addr.to_string(), res));
-            new_send_streams.write().await.push((addr.to_string(), client_send_streams));
-            let _ = server_connection.insert(conn);
-        }
-            
         Ok(())
     }
     
@@ -1016,13 +977,14 @@ impl PacketManager {
 mod tests {
     use std::time::Duration;
 
-    use durian_macros::bincode_packet;
     use tokio::sync::mpsc;
     use tokio::time::sleep;
 
     use durian::packet::PacketManager;
+    use durian_macros::bincode_packet;
 
     use crate as durian;
+    use crate::{ClientConfig, ServerConfig};
 
     #[bincode_packet]
     #[derive(Debug, PartialEq, Eq)]
@@ -1054,7 +1016,8 @@ mod tests {
             assert!(m.register_send_packet::<Other>().is_ok());
             assert!(m.register_receive_packet::<Test>(TestPacketBuilder).is_ok());
             assert!(m.register_receive_packet::<Other>(OtherPacketBuilder).is_ok());
-            assert!(m.async_init_connections(true, 2, 2, server_addr, None, 1, None).await.is_ok());
+            let server_config = ServerConfig::new_listening(server_addr, 1, 2, 2);
+            assert!(m.async_init_server(server_config).await.is_ok());
             
             for _ in 0..100 {
                 assert!(m.async_send::<Test>(Test { id: 5 }).await.is_ok());
@@ -1087,7 +1050,8 @@ mod tests {
         assert!(manager.register_receive_packet::<Other>(OtherPacketBuilder).is_ok());
         assert!(manager.register_send_packet::<Test>().is_ok());
         assert!(manager.register_send_packet::<Other>().is_ok());
-        let client = manager.async_init_connections(false, 2, 2, server_addr, Some(client_addr), 0, None).await;
+        let client_config = ClientConfig::new(client_addr, server_addr, 2, 2);
+        let client = manager.async_init_client(client_config).await;
         println!("{:#?}", client);
         
         assert!(client.is_ok());
@@ -1134,7 +1098,8 @@ mod tests {
             assert!(m.register_send_packet::<Other>().is_ok());
             assert!(m.register_receive_packet::<Test>(TestPacketBuilder).is_ok());
             assert!(m.register_receive_packet::<Other>(OtherPacketBuilder).is_ok());
-            assert!(m.async_init_connections(true, 2, 2, server_addr, None, 2, None).await.is_ok());
+            let server_config = ServerConfig::new_listening(server_addr, 2, 2, 2);
+            assert!(m.async_init_server(server_config).await.is_ok());
 
             let mut sent_packets = 0;
             let mut recv_packets = 0;
@@ -1228,7 +1193,8 @@ mod tests {
             assert!(manager.register_receive_packet::<Other>(OtherPacketBuilder).is_ok());
             assert!(manager.register_send_packet::<Test>().is_ok());
             assert!(manager.register_send_packet::<Other>().is_ok());
-            assert!(manager.async_init_connections(false, 2, 2, server_addr, Some(client2_addr), 0, None).await.is_ok());
+            let client_config = ClientConfig::new(client2_addr, server_addr, 2, 2);
+            assert!(manager.async_init_client(client_config).await.is_ok());
 
             let mut sent_packets = 0;
             let mut recv_packets = 0;
@@ -1295,7 +1261,8 @@ mod tests {
         assert!(manager.register_receive_packet::<Other>(OtherPacketBuilder).is_ok());
         assert!(manager.register_send_packet::<Test>().is_ok());
         assert!(manager.register_send_packet::<Other>().is_ok());
-        let client = manager.async_init_connections(false, 2, 2, server_addr, Some(client_addr), 0, None).await;
+        let client_config = ClientConfig::new(client_addr, server_addr, 2, 2);
+        let client = manager.async_init_client(client_config).await;
         println!("client1: {:#?}", client);
 
         assert!(client.is_ok());
@@ -1385,7 +1352,8 @@ mod tests {
             assert!(m.register_send_packet::<Other>().is_ok());
             assert!(m.register_receive_packet::<Test>(TestPacketBuilder).is_ok());
             assert!(m.register_receive_packet::<Other>(OtherPacketBuilder).is_ok());
-            assert!(m.async_init_connections(true, 2, 2, server_addr, None, 2, None).await.is_ok());
+            let server_config = ServerConfig::new_with_max_clients(server_addr, 2, 2, 2);
+            assert!(m.async_init_server(server_config).await.is_ok());
 
             let mut sent_packets = 0;
             let mut recv_packets = 0;
@@ -1483,7 +1451,8 @@ mod tests {
             assert!(manager.register_receive_packet::<Other>(OtherPacketBuilder).is_ok());
             assert!(manager.register_send_packet::<Test>().is_ok());
             assert!(manager.register_send_packet::<Other>().is_ok());
-            assert!(manager.async_init_connections(false, 2, 2, server_addr, Some(client2_addr), 0, None).await.is_ok());
+            let client_config = ClientConfig::new(client2_addr, server_addr, 2, 2);
+            assert!(manager.async_init_client(client_config).await.is_ok());
 
             let mut sent_packets = 0;
             let mut recv_packets = 0;
@@ -1551,7 +1520,8 @@ mod tests {
         assert!(manager.register_receive_packet::<Other>(OtherPacketBuilder).is_ok());
         assert!(manager.register_send_packet::<Test>().is_ok());
         assert!(manager.register_send_packet::<Other>().is_ok());
-        let client = manager.async_init_connections(false, 2, 2, server_addr, Some(client_addr), 0, None).await;
+        let client_config = ClientConfig::new(client_addr, server_addr, 2, 2);
+        let client = manager.async_init_client(client_config).await;
         println!("client1: {:#?}", client);
 
         assert!(client.is_ok());

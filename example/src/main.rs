@@ -1,5 +1,5 @@
 use std::error::Error;
-use durian::{bincode_packet, BinPacket, Packet, PacketBuilder, PacketManager, UnitPacket};
+use durian::{bincode_packet, BinPacket, ClientConfig, Packet, PacketBuilder, PacketManager, ServerConfig, UnitPacket};
 use durian::bytes::Bytes;
 use durian::serde::{Deserialize, Serialize};
 
@@ -51,6 +51,7 @@ impl PacketBuilder<Identifier> for IdentifierPacketBuilder {
     }
 }
 
+/// E2E example using `durian` from a synchronous context
 fn sync_example() {
     let client_addr = "127.0.0.1:5001";
     let server_addr = "127.0.0.1:5000";
@@ -63,13 +64,14 @@ fn sync_example() {
     server_manager.register_receive_packet::<Identifier>(IdentifierPacketBuilder).unwrap();
     server_manager.register_send_packet::<OtherPosition>().unwrap();
     server_manager.register_send_packet::<ServerAck>().unwrap();
-    // init_connections() takes in number of incoming/outgoing streams to spin up for the
+    // init_server() takes in number of incoming/outgoing streams to spin up for the
     // connection, and validates against the number of registered packets.
-    // If this is the server-side, you can configure whether it blocks on waiting for a number of
+    // Since this is the server-side, you can configure whether it blocks on waiting for a number of
     // clients, as well as the total number of expected clients (or None if server can accept any
     // number of clients).  A thread will be spun up to wait for extra clients beyond the number
     // to block on.
-    server_manager.init_connections(true, 3, 2, server_addr, None, 0, Some(1)).unwrap();
+    let server_config = ServerConfig::new(server_addr, 0, Some(1), 3, 2);
+    server_manager.init_server(server_config).unwrap();
     
     // Client example
     let mut client_manager = PacketManager::new();
@@ -80,11 +82,12 @@ fn sync_example() {
     client_manager.register_send_packet::<Position>().unwrap();
     client_manager.register_send_packet::<ClientAck>().unwrap();
     client_manager.register_send_packet::<Identifier>().unwrap();
-    // init_connections() takes in number of incoming/outgoing streams to spin up for the
+    // init_client() takes in number of incoming/outgoing streams to spin up for the
     // connection, and validates against the number of registered packets.
-    // If this is the client-side, this is a blocking call that waits until the connection is
+    // Since this is the client-side, this is a blocking call that waits until the connection is
     // established.
-    client_manager.init_connections(false, 2, 3, server_addr, Some(client_addr), 0, None).unwrap();
+    let client_config = ClientConfig::new(client_addr, server_addr, 2, 3);
+    client_manager.init_client(client_config).unwrap();
     
     
     // Below we show different ways to send/receive packets
@@ -132,6 +135,7 @@ fn sync_example() {
     println!("{:?}", client_manager.received::<ServerAck, ServerAckPacketBuilder>(true).unwrap());
 }
 
+/// E2E example of using `durian` from an asynchronous context
 async fn async_sync_example() {
     let client_addr = "127.0.0.1:5001";
     let server_addr = "127.0.0.1:5000";
@@ -144,13 +148,14 @@ async fn async_sync_example() {
     server_manager.register_receive_packet::<Identifier>(IdentifierPacketBuilder).unwrap();
     server_manager.register_send_packet::<OtherPosition>().unwrap();
     server_manager.register_send_packet::<ServerAck>().unwrap();
-    // init_connections() takes in number of incoming/outgoing streams to spin up for the
+    // init_server() takes in number of incoming/outgoing streams to spin up for the
     // connection, and validates against the number of registered packets.
-    // If this is the server-side, you can configure whether it blocks on waiting for a number of
+    // Since this is the server-side, you can configure whether it blocks on waiting for a number of
     // clients, as well as the total number of expected clients (or None if server can accept any
     // number of clients).  A thread will be spun up to wait for extra clients beyond the number
     // to block on.
-    server_manager.async_init_connections(true, 3, 2, server_addr, None, 0, Some(1)).await.unwrap();
+    let server_config = ServerConfig::new(server_addr, 0, Some(1), 3, 2);
+    server_manager.async_init_server(server_config).await.unwrap();
 
     // Client example
     let mut client_manager = PacketManager::new_for_async();
@@ -161,11 +166,12 @@ async fn async_sync_example() {
     client_manager.register_send_packet::<Position>().unwrap();
     client_manager.register_send_packet::<ClientAck>().unwrap();
     client_manager.register_send_packet::<Identifier>().unwrap();
-    // init_connections() takes in number of incoming/outgoing streams to spin up for the
+    // init_client() takes in number of incoming/outgoing streams to spin up for the
     // connection, and validates against the number of registered packets.
-    // If this is the client-side, this is a blocking call that waits until the connection is
+    // Since this is the client-side, this is a blocking call that waits until the connection is
     // established.
-    client_manager.async_init_connections(false, 2, 3, server_addr, Some(client_addr), 0, None).await.unwrap();
+    let client_config = ClientConfig::new(client_addr, server_addr, 2, 3);
+    client_manager.async_init_client(client_config).await.unwrap();
 
 
     // Below we show different ways to send/receive packets
