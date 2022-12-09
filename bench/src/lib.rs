@@ -48,10 +48,9 @@ impl PacketBuilder<Identifier> for IdentifierPacketBuilder {
     }
 }
 
-pub fn sync_example() {
-    let client_addr = "127.0.0.1:5001";
+pub fn setup(num_clients: u32, start_port: u32) -> (Vec<PacketManager>, PacketManager) {
     let server_addr = "127.0.0.1:5000";
-
+    
     // Server example
     let mut server_manager = PacketManager::new();
     // Register `receive` and `send` packets
@@ -66,22 +65,81 @@ pub fn sync_example() {
     // clients, as well as the total number of expected clients (or None if server can accept any
     // number of clients).  A thread will be spun up to wait for extra clients beyond the number
     // to block on.
-    server_manager.init_connections(true, 3, 2, server_addr, None, 0, Some(1)).unwrap();
+    server_manager.init_connections(true, 3, 2, server_addr, None, 0, Some(num_clients)).unwrap();
 
-    // Client example
-    let mut client_manager = PacketManager::new();
-    // Register `receive` and `send` packets.  
-    // Note: these must be in the same order for opposite channels as the server.
-    client_manager.register_receive_packet::<OtherPosition>(OtherPositionPacketBuilder).unwrap();
-    client_manager.register_receive_packet::<ServerAck>(ServerAckPacketBuilder).unwrap();
-    client_manager.register_send_packet::<Position>().unwrap();
-    client_manager.register_send_packet::<ClientAck>().unwrap();
-    client_manager.register_send_packet::<Identifier>().unwrap();
-    // init_connections() takes in number of incoming/outgoing streams to spin up for the
-    // connection, and validates against the number of registered packets.
-    // If this is the client-side, this is a blocking call that waits until the connection is
-    // established.
-    client_manager.init_connections(false, 2, 3, server_addr, Some(client_addr), 0, None).unwrap();
+    let mut client_managers = Vec::new();
+    
+    for i in 0..num_clients {
+        let client_addr = format!("127.0.0.1:{}", start_port + i);
+
+        // Client example
+        let mut client_manager = PacketManager::new();
+        // Register `receive` and `send` packets.  
+        // Note: these must be in the same order for opposite channels as the server.
+        client_manager.register_receive_packet::<OtherPosition>(OtherPositionPacketBuilder).unwrap();
+        client_manager.register_receive_packet::<ServerAck>(ServerAckPacketBuilder).unwrap();
+        client_manager.register_send_packet::<Position>().unwrap();
+        client_manager.register_send_packet::<ClientAck>().unwrap();
+        client_manager.register_send_packet::<Identifier>().unwrap();
+        // init_connections() takes in number of incoming/outgoing streams to spin up for the
+        // connection, and validates against the number of registered packets.
+        // If this is the client-side, this is a blocking call that waits until the connection is
+        // established.
+        client_manager.init_connections(false, 2, 3, server_addr, Some(client_addr.as_str()), 0, None).unwrap();
+        client_managers.push(client_manager);
+    }
+    
+
+    (client_managers, server_manager)
+}
+
+pub fn sync_example_multiclient_server(client_managers: &mut Vec<PacketManager>, server_manager: &mut PacketManager) {
+    let server_addr = "127.0.0.1:5000";
+
+    
+    // broadcast packets to all recipients, and receive all packets from sender
+    server_manager.broadcast(OtherPosition { x: 0, y: 1 }).unwrap();
+    // Or you can send to a specific recipient via the address
+    server_manager.broadcast(ServerAck).unwrap();
+    // received() variants can be a blocking call based on the boolean flag passed in.
+    // WARNING: be careful with blocking calls in your actual application, as it can cause your app
+    // to freeze if packets aren't sent exactly in the order you expect!
+    
+    for client_manager in client_managers.iter_mut() {
+        let _other_position_packets = loop {
+            // received_all() returns a vector of packets received from each sender address
+            // The boolean flag is to set whether it's a blocking call or not
+            let mut queue = client_manager.received_all::<OtherPosition, OtherPositionPacketBuilder>(false).unwrap();
+            // In this case, there's only one sender: the server
+            let queue_packets = queue.pop().unwrap();
+            if queue_packets.0 == server_addr {
+                if let Some(packets) = queue_packets.1 {
+                    break packets
+                }
+            }
+        };
+        let _server_ack_packets = loop {
+            let mut queue = client_manager.received_all::<ServerAck, ServerAckPacketBuilder>(false).unwrap();
+            let queue_packets = queue.pop().unwrap();
+            if queue_packets.0 == server_addr {
+                if let Some(packets) = queue_packets.1 {
+                    break packets
+                }
+            }
+        };
+        
+        client_manager.send(Position { x: 5, y: 6 }).unwrap();
+        client_manager.send(ClientAck).unwrap();
+    }
+    
+    // wait for all packets from clients
+    server_manager.received_all::<Position, PositionPacketBuilder>(true).unwrap();
+    server_manager.received_all::<ClientAck, ClientAckPacketBuilder>(true).unwrap();
+}
+
+pub fn sync_example_single_client_server(client_manager: &mut PacketManager, server_manager: &mut PacketManager) {
+    let client_addr = "127.0.0.1:5001";
+    let server_addr = "127.0.0.1:5000";
 
 
     // Below we show different ways to send/receive packets
@@ -93,7 +151,7 @@ pub fn sync_example() {
     // received() variants can be a blocking call based on the boolean flag passed in.
     // WARNING: be careful with blocking calls in your actual application, as it can cause your app
     // to freeze if packets aren't sent exactly in the order you expect!
-    let other_position_packets = loop {
+    let _other_position_packets = loop {
         // received_all() returns a vector of packets received from each sender address
         // The boolean flag is to set whether it's a blocking call or not
         let mut queue = client_manager.received_all::<OtherPosition, OtherPositionPacketBuilder>(false).unwrap();
@@ -106,7 +164,7 @@ pub fn sync_example() {
         }
     };
     //println!("{:?}", other_position_packets);
-    let server_ack_packets = loop {
+    let _server_ack_packets = loop {
         let mut queue = client_manager.received_all::<ServerAck, ServerAckPacketBuilder>(false).unwrap();
         let queue_packets = queue.pop().unwrap();
         if queue_packets.0 == server_addr {
@@ -151,7 +209,7 @@ pub async fn async_sync_example() {
     // to block on.
     server_manager.async_init_connections(true, 3, 2, server_addr, None, 0, Some(1)).await.unwrap();
 
-    /// Client example
+    // Client example
     let mut client_manager = PacketManager::new_for_async();
     // Register `receive` and `send` packets.  
     // Note: these must be in the same order for opposite channels as the server.
@@ -176,7 +234,7 @@ pub async fn async_sync_example() {
     // received() variants can be a blocking call based on the boolean flag passed in.
     // WARNING: be careful with blocking calls in your actual application, as it can cause your app
     // to freeze if packets aren't sent exactly in the order you expect!
-    let other_position_packets = loop {
+    let _other_position_packets = loop {
         // received_all() returns a vector of packets received from each sender address
         // The boolean flag is to set whether it's a blocking call or not
         let mut queue = client_manager.async_received_all::<OtherPosition, OtherPositionPacketBuilder>(false).await.unwrap();
@@ -189,7 +247,7 @@ pub async fn async_sync_example() {
         }
     };
     //println!("{:?}", other_position_packets);
-    let server_ack_packets = loop {
+    let _server_ack_packets = loop {
         let mut queue = client_manager.async_received_all::<ServerAck, ServerAckPacketBuilder>(false).await.unwrap();
         let queue_packets = queue.pop().unwrap();
         if queue_packets.0 == server_addr {

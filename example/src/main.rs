@@ -152,7 +152,7 @@ async fn async_sync_example() {
     // to block on.
     server_manager.async_init_connections(true, 3, 2, server_addr, None, 0, Some(1)).await.unwrap();
 
-    /// Client example
+    // Client example
     let mut client_manager = PacketManager::new_for_async();
     // Register `receive` and `send` packets.  
     // Note: these must be in the same order for opposite channels as the server.
@@ -214,7 +214,7 @@ async fn async_sync_example() {
 }
 
 
-/// Run the synchronous example
+// Run the synchronous example
 fn main() {
     sync_example();
 }

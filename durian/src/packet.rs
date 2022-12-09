@@ -63,6 +63,7 @@ pub struct PacketManager {
     // Client addr to (index in above Vecs AKA a client ID, Connection)
     client_connections: Arc<RwLock<HashMap<String, (u32, Connection)>>>,
     server_connection: Option<Connection>,
+    source_addr: String,
     next_receive_id: u32,
     next_send_id: u32,
     // We construct a single Tokio Runtime to be used by each PacketManger instance, so that
@@ -89,6 +90,7 @@ impl PacketManager {
                     new_rxs: Arc::new(RwLock::new(Vec::new())),
                     client_connections: Arc::new(RwLock::new(HashMap::new())),
                     server_connection: None,
+                    source_addr: "".to_string(),
                     next_receive_id: 0,
                     next_send_id: 0,
                     runtime: Arc::new(Some(runtime))
@@ -111,6 +113,7 @@ impl PacketManager {
             new_rxs: Arc::new(Default::default()),
             client_connections: Arc::new(RwLock::new(HashMap::new())),
             server_connection: None,
+            source_addr: "".to_string(),
             next_receive_id: 0,
             next_send_id: 0,
             runtime: Arc::new(None)
@@ -123,7 +126,19 @@ impl PacketManager {
                 panic!("PacketManager does not have a runtime instance associated with it.  Did you mean to call async_init_connection()?");
             }
             Some(runtime) => {
-                self.validate_connection_prereqs(num_incoming_streams, num_outgoing_streams)?;
+                self.validate_connection_prereqs(is_server, &client_addr, num_incoming_streams, num_outgoing_streams)?;
+                let server_addr = server_addr.into();
+                let mut client_addr = if let Some(s) = client_addr {
+                    Some(s.into())
+                } else {
+                    None
+                };
+                if is_server {
+                    self.source_addr = server_addr.clone();
+                } else {
+                    self.source_addr = client_addr.unwrap();
+                    client_addr = Some(self.source_addr.clone());
+                }
                 // TODO: this isn't so great, we can refactor to create static methods that don't require mutable ref to self, and use those instead later on
                 runtime.block_on(PacketManager::async_init_connections_helper(is_server, num_incoming_streams, num_outgoing_streams, server_addr, client_addr,
                                                                                         wait_for_clients, expected_num_clients, &self.runtime, &self.new_send_streams, &self.new_rxs,
@@ -136,13 +151,28 @@ impl PacketManager {
         if self.runtime.is_some() {
             panic!("PacketManager has a runtime instance associated with it.  If you are using async_init_connections(), make sure you create the PacketManager using new_async(), not new()");
         }
-        self.validate_connection_prereqs(num_incoming_streams, num_outgoing_streams)?;
+        self.validate_connection_prereqs(is_server, &client_addr, num_incoming_streams, num_outgoing_streams)?;
+        let server_addr = server_addr.into();
+        let mut client_addr = if let Some(s) = client_addr {
+            Some(s.into())
+        } else {
+            None
+        };
+        if is_server {
+            self.source_addr = server_addr.clone();
+        } else {
+            self.source_addr = client_addr.unwrap();
+            client_addr = Some(self.source_addr.clone());
+        }
         PacketManager::async_init_connections_helper(is_server, num_incoming_streams, num_outgoing_streams, server_addr, client_addr, 
                                                      wait_for_clients, expected_num_clients, &self.runtime, &self.new_send_streams, &self.new_rxs, 
                                                      &self.client_connections, &mut self.server_connection).await
     }
     
-    fn validate_connection_prereqs(&self, num_incoming_streams: u32, num_outgoing_streams: u32) -> Result<(), ConnectionError> {
+    fn validate_connection_prereqs<S: Into<String>>(&self, is_server: bool, client_addr: &Option<S>, num_incoming_streams: u32, num_outgoing_streams: u32) -> Result<(), ConnectionError> {
+        if !is_server && client_addr.is_none() {
+            return Err(ConnectionError::new("PacketManager is for client-side, but client_addr is None"));
+        }
         let num_receive_packets = self.receive_packets.len() as u32;
         if num_receive_packets != num_incoming_streams {
             return Err(ConnectionError::new(format!("num_incoming_streams={} does not match number of registered receive packets={}.  Did you forget to call register_receive_packet()?", num_incoming_streams, num_receive_packets)));
@@ -394,6 +424,14 @@ impl PacketManager {
         }
         
         Ok(rxs)
+    }
+    
+    /// Returns the source address of this PacketManager as a String
+    /// 
+    /// # Returns
+    /// Source address is the server address if this PacketManager is for a server, else the client address.
+    pub fn get_source_addr(&self) -> String {
+        self.source_addr.to_string()
     }
     
     pub fn register_receive_packet<T: Packet + 'static>(&mut self, packet_builder: impl PacketBuilder<T> + 'static + Sync + Send) -> Result<(), ReceiveError> {
