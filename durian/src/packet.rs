@@ -72,8 +72,9 @@ pub trait PacketBuilder<T: Packet> {
 /// like ensuring they are on the same "version" so to speak, and is used to properly identify
 /// Packets.
 ///
-/// 3. Initiate a connection with [`init_connections()`](`PacketManager::init_connections()`) or the async variant
-/// [`async_init_connections()`](`PacketManager::async_init_connections()`)
+/// 3. Initiate connection(s) with [`init_client()`](`PacketManager::init_client()`) (or the async variant [`async_init_client()`](`PacketManager::async_init_client()`)
+/// if on the client side, else use [`init_server()`](`PacketManager::init_server()`) (or the async variant [`async_init_server)`](`PacketManager::async_init_server()`)
+/// if on the server side.
 ///
 /// 4. Send packets using any of [`broadcast()`](`PacketManager::broadcast()`), [`send()`](`PacketManager::send()`), [`send_to()`](`PacketManager::send_to()`)
 /// or the respective `async` variants if calling from an async context already.  Receive packets
@@ -300,10 +301,22 @@ impl PacketManager {
         }
     }
     
+    /// Initialize a client side `PacketManager`
+    /// 
+    /// # Arguments
+    /// 
+    /// * `client_config` - Client configuration
+    /// 
+    /// # Returns
+    /// A [`Result`] containing `()` if successful, else a [`ConnectionError`] on error
+    /// 
+    /// # Panics
+    /// When the `PacketManager` does not have a runtime instance associated with it, which can happen if you created
+    /// the `PacketManager` using [`new_for_async()`](`PacketManager::new_for_async()`) instead of [`new()`](`PacketManager::new()`).
     pub fn init_client(&mut self, client_config: ClientConfig) -> Result<(), ConnectionError> {
         match self.runtime.as_ref() {
             None => {
-                panic!("PacketManager does not have a runtime instance associated with it.  Did you mean to call async_init_connection()?");
+                panic!("PacketManager does not have a runtime instance associated with it.  Did you mean to call async_init_client()?");
             }
             Some(runtime) => {
                 self.validate_connection_prereqs(client_config.num_receive_streams, client_config.num_send_streams)?;
@@ -316,10 +329,22 @@ impl PacketManager {
             }
         }
     }
-    
+
+    /// Initialize a client side `PacketManager`, to be used if calling from an async context
+    ///
+    /// # Arguments
+    ///
+    /// * `client_config` - Client configuration
+    ///
+    /// # Returns
+    /// A `Future` that returns a [`Result`] containing `()` if successful, else a [`ConnectionError`] on error
+    ///
+    /// # Panics
+    /// When the `PacketManager` has a runtime instance associated with it, which can happen if you created
+    /// the `PacketManager` using [`new()`](`PacketManager::new()`) instead of [`new_for_async()`](`PacketManager::new_for_async()`).
     pub async fn async_init_client(&mut self, client_config: ClientConfig) -> Result<(), ConnectionError> {
         if self.runtime.is_some() {
-            panic!("PacketManager has a runtime instance associated with it.  If you are using async_init_connections(), make sure you create the PacketManager using new_async(), not new()");
+            panic!("PacketManager has a runtime instance associated with it.  If you are using async_init_client(), make sure you create the PacketManager using new_for_async(), not new()");
         }
         self.validate_connection_prereqs(client_config.num_receive_streams, client_config.num_send_streams)?;
         self.source_addr = client_config.addr.clone();
@@ -330,10 +355,22 @@ impl PacketManager {
                                           &mut self.server_connection).await
     }
 
+    /// Initialize a server side `PacketManager`
+    ///
+    /// # Arguments
+    ///
+    /// * `server_config` - Server configuration
+    ///
+    /// # Returns
+    /// A [`Result`] containing `()` if successful, else a [`ConnectionError`] on error
+    ///
+    /// # Panics
+    /// When the `PacketManager` does not have a runtime instance associated with it, which can happen if you created
+    /// the `PacketManager` using [`new_for_async()`](`PacketManager::new_for_async()`) instead of [`new()`](`PacketManager::new()`).
     pub fn init_server(&mut self, server_config: ServerConfig) -> Result<(), ConnectionError> {
         match self.runtime.as_ref() {
             None => {
-                panic!("PacketManager does not have a runtime instance associated with it.  Did you mean to call async_init_connection()?");
+                panic!("PacketManager does not have a runtime instance associated with it.  Did you mean to call async_init_server()?");
             }
             Some(runtime) => {
                 self.validate_connection_prereqs(server_config.num_receive_streams, server_config.num_send_streams)?;
@@ -347,9 +384,21 @@ impl PacketManager {
         }
     }
 
+    /// Initialize a server side `PacketManager`, to be used if calling from an async context
+    ///
+    /// # Arguments
+    ///
+    /// * `server_config` - Server configuration
+    ///
+    /// # Returns
+    /// A `Future` that returns a [`Result`] containing `()` if successful, else a [`ConnectionError`] on error
+    ///
+    /// # Panics
+    /// When the `PacketManager` has a runtime instance associated with it, which can happen if you created
+    /// the `PacketManager` using [`new()`](`PacketManager::new()`) instead of [`new_for_async()`](`PacketManager::new_for_async()`).
     pub async fn async_init_server(&mut self, server_config: ServerConfig) -> Result<(), ConnectionError> {
         if self.runtime.is_some() {
-            panic!("PacketManager has a runtime instance associated with it.  If you are using async_init_connections(), make sure you create the PacketManager using new_async(), not new()");
+            panic!("PacketManager has a runtime instance associated with it.  If you are using async_init_server(), make sure you create the PacketManager using new_for_async(), not new()");
         }
         self.validate_connection_prereqs(server_config.num_receive_streams, server_config.num_send_streams)?;
         self.source_addr = server_config.addr.clone();
@@ -618,8 +667,8 @@ impl PacketManager {
     
     /// Register a [`Packet`] on a `receive` stream/channel, and its associated [`PacketBuilder`]
     /// 
-    /// # Error
-    /// Returns a [`ReceiveError`] if registration failed.
+    /// # Returns
+    /// A [`Result`] containing `()` for success, [`ReceiveError`] if registration failed.
     pub fn register_receive_packet<T: Packet + 'static>(&mut self, packet_builder: impl PacketBuilder<T> + 'static + Sync + Send) -> Result<(), ReceiveError> {
         if self.receive_packets.contains_right(&TypeId::of::<T>()) {
             return Err(ReceiveError::new(format!("Type '{}' was already registered as a Receive packet", type_name::<T>())))
@@ -635,8 +684,8 @@ impl PacketManager {
 
     /// Register a [`Packet`] on a `send` stream/channel
     ///
-    /// # Error
-    /// Returns a [`SendError`] if registration failed.
+    /// # Returns
+    /// A [`Result`] containing `()` for success, [`SendError`] if registration failed.
     pub fn register_send_packet<T: Packet + 'static>(&mut self) -> Result<(), SendError> {
         if self.send_packets.contains_right(&TypeId::of::<T>()) {
             return Err(SendError::new(format!("Type '{}' was already registered as a Send packet", type_name::<T>())))
@@ -648,6 +697,29 @@ impl PacketManager {
         Ok(())
     }
     
+    /// Fetches all received packets from all destination addresses
+    /// 
+    /// This reads from all `receive` channels and deserializes the [`Packets`](`Packet`) requested.
+    /// 
+    /// # Type Arguments
+    /// * `T: Packet + 'static` - The [`Packet`] type to request
+    /// * `U: PacketBuilder<T> + 'static` - The [`PacketBuilder`] for this packet, used to deserialize bytes into
+    ///     the [`Packet`] type requested
+    /// 
+    /// # Arguments
+    /// * `blocking` - `true` to make this a blocking call, waiting for __ALL__ destination addresses to send at least
+    ///     one Packet of type `T`.  `false` will make this non-blocking, and any destination addresses that did not
+    ///     send the Packet will return [`None`] paired with it.  __Warning: be careful about making this a blocking
+    ///     call, as if any of the Packets don't come from any destination address, it could hang your application__
+    /// 
+    /// # Returns
+    /// A [`Result`] containing a [`Vec`] of pair tuples with the first element being the destination socket address,
+    /// and the second element will have a `None` if `blocking` was set to `false` and the associated destination address
+    /// did not send the Packet type when this call queried for it, or [`Some`] containing a [`Vec`] of the Packets
+    /// type `T` that was requested from the associated destination address.
+    /// 
+    /// # Panics
+    /// If the `PacketManager` was created via [`new_for_async()`](`PacketManager::new_for_async()`)
     pub fn received_all<T: Packet + 'static, U: PacketBuilder<T> + 'static>(&mut self, blocking: bool) -> Result<Vec<(String, Option<Vec<T>>)>, ReceiveError> {
         self.validate_for_received::<T>(true)?;
         self.update_new_receivers();
@@ -667,10 +739,16 @@ impl PacketManager {
         }
     }
 
-    // blocking blocks on ALL receivers
+    /// Fetches all received packets from all destination addresses
+    /// 
+    /// Same as [`received_all()`](`PacketManager::received_all()`), except it returns a `Future` and can be called
+    /// from an async context.
+    /// 
+    /// # Panics
+    /// If the `PacketManager` was created via [`new()`](`PacketManager::new()`)
     pub async fn async_received_all<T: Packet + 'static, U: PacketBuilder<T> + 'static>(&mut self, blocking: bool) -> Result<Vec<(String, Option<Vec<T>>)>, ReceiveError> {
         if self.runtime.is_some() {
-            panic!("PacketManager has a runtime instance associated with it.  If you are using async_received(), make sure you create the PacketManager using new_async(), not new()");
+            panic!("PacketManager has a runtime instance associated with it.  If you are using async_received(), make sure you create the PacketManager using new_for_async(), not new()");
         }
         self.async_validate_for_received::<T>(true).await?;
         self.async_update_new_receivers().await;
@@ -681,6 +759,28 @@ impl PacketManager {
         Ok(res)
     }
 
+    /// Fetches all received packets from a single destination address.  This should only be called if there is __only__
+    /// one destination address, particularly convenient if this is for a client which connects to a single server.
+    ///
+    /// This reads from the single `receive` channel and deserializes the [`Packets`](`Packet`) requested.
+    ///
+    /// # Type Arguments
+    /// * `T: Packet + 'static` - The [`Packet`] type to request
+    /// * `U: PacketBuilder<T> + 'static` - The [`PacketBuilder`] for this packet, used to deserialize bytes into
+    ///     the [`Packet`] type requested
+    ///
+    /// # Arguments
+    /// * `blocking` - `true` to make this a blocking call, waiting for the destination address to send at least
+    ///     one Packet of type `T`.  `false` will make this non-blocking, and if destination address did not
+    ///     send the Packet, it will return [`None`].  __Warning: be careful about making this a blocking
+    ///     call, as if Packets don't arrive exactly as you expect, it could hang your application__
+    ///
+    /// # Returns
+    /// A [`Result`] containing [`None`] if the destination address did not send any Packets of this type, else [`Some`]
+    /// containing a [`Vec`] of those received packets.
+    ///
+    /// # Panics
+    /// If the [`PacketManager`] was created via [`new_for_async()`](`PacketManager::new_for_async()`)
     pub fn received<T: Packet + 'static, U: PacketBuilder<T> + 'static>(&mut self, blocking: bool) -> Result<Option<Vec<T>>, ReceiveError> {
         self.validate_for_received::<T>(false)?;
         self.update_new_receivers();
@@ -694,9 +794,17 @@ impl PacketManager {
         }
     }
 
+    /// Fetches all received packets from a single destination address.  This should only be called if there is __only__
+    /// one destination address, particularly convenient if this is for a client which connects to a single server.
+    /// 
+    /// Same as [`received()`](`PacketManager::received()`), except it returns a `Future` and can be called
+    /// from an async context.
+    ///
+    /// # Panics
+    /// If the `PacketManager` was created via [`new()`](`PacketManager::new()`)
     pub async fn async_received<T: Packet + 'static, U: PacketBuilder<T> + 'static>(&mut self, blocking: bool) -> Result<Option<Vec<T>>, ReceiveError> {
         if self.runtime.is_some() {
-            panic!("PacketManager has a runtime instance associated with it.  If you are using async_received(), make sure you create the PacketManager using new_async(), not new()");
+            panic!("PacketManager has a runtime instance associated with it.  If you are using async_received(), make sure you create the PacketManager using new_for_async(), not new()");
         }
         self.async_validate_for_received::<T>(false).await?;
         self.async_update_new_receivers().await;
@@ -793,12 +901,22 @@ impl PacketManager {
         }
     }
     
+    /// Broadcast a Packet to all destination addresses
+    /// 
+    /// # Arguments
+    /// * `packet` - The [`Packet`] to broadcast
+    /// 
+    /// # Returns
+    /// A [`Result`] containing `()` if Packet was sent, else [`SendError`]
+    /// 
+    /// # Panics
+    /// If the [`PacketManager`] was created via [`new_for_async()`](`PacketManager::new_for_async()`)
     pub fn broadcast<T: Packet + 'static>(&mut self, packet: T) -> Result<(), SendError> {
         self.validate_for_send::<T>(true)?;
         self.update_new_senders();
         match self.runtime.as_ref() {
             None => {
-                panic!("PacketManager does not have a runtime instance associated with it.  Did you mean to call async_received()?");
+                panic!("PacketManager does not have a runtime instance associated with it.  Did you mean to call async_broadcast()?");
             }
             Some(runtime) => {
                 runtime.block_on(async {
@@ -812,6 +930,13 @@ impl PacketManager {
         }
     }
 
+    /// Broadcast a Packet to all destination addresses
+    /// 
+    /// Same as [`broadcast()`](`PacketManager::broadcast()`), except it returns a `Future` and can be called from
+    /// an async context.
+    ///
+    /// # Panics
+    /// If the `PacketManager` was created via [`new()`](`PacketManager::new()`)
     pub async fn async_broadcast<T: Packet + 'static>(&mut self, packet: T) -> Result<(), SendError> {
         if self.runtime.is_some() {
             panic!("PacketManager has a runtime instance associated with it.  If you are using async_send(), make sure you create the PacketManager using new_async(), not new()");
@@ -825,12 +950,23 @@ impl PacketManager {
         Ok(())
     }
 
+    /// Send a Packet to the single destination address.  This should __only__ be used if there is __only__ one
+    /// destination address, particularly convenient if this is for a client which connects to a single server.
+    ///
+    /// # Arguments
+    /// * `packet` - The [`Packet`] to broadcast
+    ///
+    /// # Returns
+    /// A [`Result`] containing `()` if Packet was sent, else [`SendError`]
+    ///
+    /// # Panics
+    /// If the [`PacketManager`] was created via [`new_for_async()`](`PacketManager::new_for_async()`)
     pub fn send<T: Packet + 'static>(&mut self, packet: T) -> Result<(), SendError> {
         self.validate_for_send::<T>(false)?;
         self.update_new_senders();
         match self.runtime.as_ref() {
             None => {
-                panic!("PacketManager does not have a runtime instance associated with it.  Did you mean to call async_received()?");
+                panic!("PacketManager does not have a runtime instance associated with it.  Did you mean to call async_send()?");
             }
             Some(runtime) => {
                 runtime.block_on(PacketManager::async_send_helper::<T>(&packet, 0, &self.send_packets, &self.send_streams))
@@ -838,21 +974,39 @@ impl PacketManager {
         }
     }
 
+    /// Send a Packet to the single destination address.  This should __only__ be used if there is __only__ one
+    /// destination address, particularly convenient if this is for a client which connects to a single server.
+    /// 
+    /// Same as [`send()`](`PacketManager::send()`)
+    ///
+    /// # Panics
+    /// If the `PacketManager` was created via [`new()`](`PacketManager::new()`)
     pub async fn async_send<T: Packet + 'static>(&mut self, packet: T) -> Result<(), SendError> {
         if self.runtime.is_some() {
-            panic!("PacketManager has a runtime instance associated with it.  If you are using async_send(), make sure you create the PacketManager using new_async(), not new()");
+            panic!("PacketManager has a runtime instance associated with it.  If you are using async_send(), make sure you create the PacketManager using new_for_async(), not new()");
         }
         self.async_validate_for_send::<T>(false).await?;
         self.async_update_new_senders().await;
         PacketManager::async_send_helper::<T>(&packet, 0, &self.send_packets, &self.send_streams).await
     }
 
+    /// Send a Packet to a specified destination address.
+    ///
+    /// # Arguments
+    /// * `addr` - The destination Socket address to send the Packet to
+    /// * `packet` - The [`Packet`] to broadcast
+    ///
+    /// # Returns
+    /// A [`Result`] containing `()` if Packet was sent, else [`SendError`]
+    ///
+    /// # Panics
+    /// If the [`PacketManager`] was created via [`new_for_async()`](`PacketManager::new_for_async()`)
     pub fn send_to<T: Packet + 'static>(&mut self, addr: impl Into<String>, packet: T) -> Result<(), SendError> {
         self.validate_for_send::<T>(true)?;
         self.update_new_senders();
         match self.runtime.as_ref() {
             None => {
-                panic!("PacketManager does not have a runtime instance associated with it.  Did you mean to call async_received()?");
+                panic!("PacketManager does not have a runtime instance associated with it.  Did you mean to call async_send_to()?");
             }
             Some(runtime) => {
                 let send_index = if self.server_connection.is_some() {
@@ -867,6 +1021,12 @@ impl PacketManager {
         }
     }
 
+    /// Send a Packet to a specified destination address.
+    ///
+    /// Same as [`send_to()`](`PacketManager::send_to()`)
+    ///
+    /// # Panics
+    /// If the `PacketManager` was created via [`new()`](`PacketManager::new()`)
     pub async fn async_send_to<T: Packet + 'static>(&mut self, addr: impl Into<String>, packet: T) -> Result<(), SendError> {
         if self.runtime.is_some() {
             panic!("PacketManager has a runtime instance associated with it.  If you are using async_send(), make sure you create the PacketManager using new_async(), not new()");
@@ -918,12 +1078,30 @@ impl PacketManager {
         Ok(())
     }
     
+    /// Returns the number of clients attached to this server.  This will always return `0` if on a client side.
     pub fn get_num_clients(&self) -> u32 {
         self.client_connections.blocking_read().len() as u32
     }
     
-    pub fn get_client_id<S: Into<String>>(&self, addr: S) -> u32 {
-        self.client_connections.blocking_read().get(&addr.into()).unwrap().0
+    /// Returns the `Client ID` for a Socket address.  Client IDs start from 0 and are incremented in the order each
+    /// client is connected to the server.  This can be helpful to associated some sort of numerical ID with clients.
+    /// 
+    /// # Returns
+    /// [`None`] if the client address was not a valid address in client connections.  [`Some`] containing the Client ID
+    /// for the requested client Socket address.
+    /// 
+    /// # Panics
+    /// If called from a client side
+    pub fn get_client_id<S: Into<String>>(&self, addr: S) -> Option<u32> {
+        let client_connections = self.client_connections.blocking_read();
+        let addr = addr.into();
+        if client_connections.is_empty(){
+            panic!("get_client_id() should only be called on the server side for a valid client Socket address");
+        }
+        if client_connections.contains_key(&addr) {
+            return None;
+        }
+        Some(client_connections.get(&addr).unwrap().0)
     }
     
     fn validate_for_send<T: Packet + 'static>(&self, for_all: bool) -> Result<(), SendError> {
