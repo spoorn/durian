@@ -5,8 +5,6 @@ use std::sync::Arc;
 
 use bimap::BiMap;
 use bytes::Bytes;
-use derive_more::Display;
-use durian_macros::ErrorOnlyMessage;
 use hashbrown::HashMap;
 use log::{debug, error, trace};
 use quinn::{Connection, RecvStream, SendStream};
@@ -17,6 +15,7 @@ use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::Receiver;
 use tokio::task::JoinHandle;
 
+use crate::{ConnectionError, ReceiveError, SendError};
 use crate::quinn_helpers::{make_client_endpoint, make_server_endpoint};
 
 const FRAME_BOUNDARY: &[u8] = b"AAAAAA031320050421";
@@ -45,30 +44,6 @@ pub trait PacketBuilder<T: Packet> {
     /// # Error
     /// Returns an error if deserializing fails
     fn read(&self, bytes: Bytes) -> Result<T, Box<dyn Error>>;
-}
-
-/// Error when calling [`PacketManager::init_connections()`] or [`PacketManager::async_init_connections()`]
-#[derive(Debug, Clone, Display, ErrorOnlyMessage)]
-pub struct ConnectionError {
-    /// Error message
-    pub message: String
-}
-
-/// Error when calling [`PacketManager::register_receive_packet()`], [`PacketManager::received_all()`],
-/// [`PacketManager::async_received_all()`], [`PacketManager::received()`], [`PacketManager::async_received()`]
-#[derive(Debug, Clone, Display, ErrorOnlyMessage)]
-pub struct ReceiveError {
-    /// Error message
-    pub message: String
-}
-
-/// Error when calling [`PacketManager::register_send_packet()`], [`PacketManager::broadcast()`],
-/// [`PacketManager::async_broadcast()`], [`PacketManager::send()`], [`PacketManager::async_send()`],
-/// [`PacketManager::send_to()`], [`PacketManager::async_send_to()`]
-#[derive(Debug, Clone, Display, ErrorOnlyMessage)]
-pub struct SendError {
-    /// Error message
-    pub message: String
 }
 
 /// The core of `durian` that is the central struct containing all the necessary APIs for initiating and managing
@@ -161,6 +136,41 @@ pub struct PacketManager {
     // methods can be synchronous.  There is also an async version of each API if the user wants
     // to use their own runtime.
     runtime: Arc<Option<Runtime>>
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+/// Client configuration for initiating a connection from a client to a server via [`PacketManager::init_client()`]
+pub struct ClientConfig {
+    /// Socket address of the client (`hostname:port`) (e.g. "127.0.0.1:5001")
+    pub addr: String,
+    /// Socket address of the server to connect to (`hostname:port`) (e.g. "127.0.0.1:5000")
+    pub server_addr: String,
+    /// Number of `receive` streams to accept from server to client.  Must be equal to number of receive packets
+    /// registered through [`PacketManager::register_receive_packet()`]
+    pub num_receive_streams: u32,
+    /// Number of `send` streams to open from client to server.  Must be equal to number of send packets registered
+    /// through [`PacketManager::register_send_packet()`]
+    pub num_send_streams: u32
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+/// Server configuration for spinning up a server on a socket address via [`PacketManager::init_server()`]
+pub struct ServerConfig {
+    /// Socket address of the server (`hostname:port`) (e.g. "127.0.0.1:5001")
+    pub addr: String,
+    /// Number of clients to block waiting for incoming connections
+    pub wait_for_clients: u32,
+    /// [Optional] Total number of clients the server expects to connect with.  The server will spin up a thread that
+    /// waits for incoming client connections until `total_expected_clients` is reached.  Set to `None` to allow any
+    /// number of clients connections.  If `wait_for_clients > total_expected_clients`, the server will still wait
+    /// for `wait_for_clients` number of client connections.
+    pub total_expected_clients: Option<u32>,
+    /// Number of `receive` streams to accept from server to client.  Must be equal to number of receive packets
+    /// registered through [`PacketManager::register_receive_packet()`]
+    pub num_receive_streams: u32,
+    /// Number of `send` streams to open from client to server.  Must be equal to number of send packets registered
+    /// through [`PacketManager::register_send_packet()`]
+    pub num_send_streams: u32
 }
 
 impl PacketManager {
@@ -281,6 +291,117 @@ impl PacketManager {
         if num_send_packets != num_outgoing_streams {
             return Err(ConnectionError::new(format!("num_outgoing_streams={} does not match number of registered send packets={}.  Did you forget to call register_send_packet()?", num_incoming_streams, num_send_packets)));
         }
+        Ok(())
+    }
+    
+    async fn init_server_helper(server_config: ServerConfig,
+                                runtime: &Arc<Option<Runtime>>,
+                                new_send_streams: &Arc<RwLock<Vec<(String, HashMap<u32, RwLock<SendStream>>)>>>,
+                                new_rxs: &Arc<RwLock<Vec<(String, HashMap<u32, (RwLock<Receiver<Bytes>>, JoinHandle<()>)>)>>>,
+                                client_connections: &Arc<RwLock<HashMap<String, (u32, Connection)>>>) -> Result<(), Box<dyn Error>> {
+        debug!("Initiating server with {:?}", server_config);
+
+        let (endpoint, server_cert) = make_server_endpoint(server_config.addr.parse()?)?;
+        let num_receive_streams = server_config.num_receive_streams;
+        let num_send_streams = server_config.num_send_streams;
+
+        // TODO: use synchronous blocks during read and write of client_connections
+        // Single connection
+        for i in 0..server_config.wait_for_clients {
+            let incoming_conn = endpoint.accept().await.unwrap();
+            let conn = incoming_conn.await?;
+            let addr = conn.remote_address();
+            if client_connections.read().await.contains_key(&addr.to_string()) {
+                panic!("[server] Client with addr={} was already connected", addr);
+            }
+            debug!("[server] connection accepted: addr={}", conn.remote_address());
+            let (server_send_streams, recv_streams) = PacketManager::open_streams_for_connection(addr.to_string(), &conn, num_receive_streams, num_send_streams).await?;
+            let res = PacketManager::spawn_receive_thread(&addr.to_string(), recv_streams, runtime.as_ref()).unwrap();
+            new_rxs.write().await.push((addr.to_string(), res));
+            new_send_streams.write().await.push((addr.to_string(), server_send_streams));
+            client_connections.write().await.insert(addr.to_string(), (i, conn));
+        }
+
+        if server_config.total_expected_clients.is_none() || server_config.total_expected_clients.unwrap() > server_config.wait_for_clients {
+            let client_connections = client_connections.clone();
+            let arc_send_streams = new_send_streams.clone();
+            let arc_rx = new_rxs.clone();
+            let arc_runtime = Arc::clone(runtime);
+            let mut client_id = server_config.wait_for_clients;
+            let accept_client_task = async move {
+                match server_config.total_expected_clients {
+                    None => {
+                        loop {
+                            debug!("[server] Waiting for more clients...");
+                            let incoming_conn = endpoint.accept().await.unwrap();
+                            let conn = incoming_conn.await?;
+                            let addr = conn.remote_address();
+                            if client_connections.read().await.contains_key(&addr.to_string()) {
+                                panic!("[server] Client with addr={} was already connected", addr);
+                            }
+                            debug!("[server] connection accepted: addr={}", conn.remote_address());
+                            let (send_streams, recv_streams) = PacketManager::open_streams_for_connection(addr.to_string(), &conn, num_receive_streams, num_send_streams).await?;
+                            let res = PacketManager::spawn_receive_thread(&addr.to_string(), recv_streams, arc_runtime.as_ref())?;
+                            arc_rx.write().await.push((addr.to_string(), res));
+                            arc_send_streams.write().await.push((addr.to_string(), send_streams));
+                            client_connections.write().await.insert(addr.to_string(), (client_id, conn));
+                            client_id += 1;
+                        }
+                    }
+                    Some(expected_num_clients) => {
+                        for i in 0..(expected_num_clients - server_config.wait_for_clients) {
+                            debug!("[server] Waiting for client #{}", i + server_config.wait_for_clients);
+                            let incoming_conn = endpoint.accept().await.unwrap();
+                            let conn = incoming_conn.await?;
+                            let addr = conn.remote_address();
+                            if client_connections.read().await.contains_key(&addr.to_string()) {
+                                panic!("[server] Client with addr={} was already connected", addr);
+                            }
+                            debug!("[server] connection accepted: addr={}", conn.remote_address());
+                            let (send_streams, recv_streams) = PacketManager::open_streams_for_connection(addr.to_string(), &conn, num_receive_streams, num_send_streams).await?;
+                            let res = PacketManager::spawn_receive_thread(&addr.to_string(), recv_streams, arc_runtime.as_ref())?;
+                            arc_rx.write().await.push((addr.to_string(), res));
+                            arc_send_streams.write().await.push((addr.to_string(), send_streams));
+                            client_connections.write().await.insert(addr.to_string(), (client_id, conn));
+                            client_id += 1;
+                        }
+                    }
+                }
+                Ok::<(), Box<ConnectionError>>(())
+            };
+
+            // TODO: save this value
+            let accept_client_thread = match runtime.as_ref() {
+                None => {
+                    tokio::spawn(accept_client_task)
+                }
+                Some(runtime) => {
+                    runtime.spawn(accept_client_task)
+                }
+            };
+        }
+        
+        Ok(())
+    }
+    
+    async fn init_client_helper(client_config: ClientConfig,
+                                 runtime: &Arc<Option<Runtime>>,
+                                 new_rxs: &Arc<RwLock<Vec<(String, HashMap<u32, (RwLock<Receiver<Bytes>>, JoinHandle<()>)>)>>>,
+                                 new_send_streams: &Arc<RwLock<Vec<(String, HashMap<u32, RwLock<SendStream>>)>>>,
+                                 server_connection: &mut Option<Connection>) -> Result<(), Box<dyn Error>> {
+        debug!("Initiating client with {:?}", client_config);
+        // Bind this endpoint to a UDP socket on the given client address.
+        let endpoint = make_client_endpoint(client_config.addr.parse()?, &[])?;
+
+        // Connect to the server passing in the server name which is supposed to be in the server certificate.
+        let conn = endpoint.connect(client_config.server_addr.parse()?, "server")?.await?;
+        let addr = conn.remote_address();
+        debug!("[client] connected: addr={}", addr);
+        let (client_send_streams, recv_streams) = PacketManager::open_streams_for_connection(addr.to_string(), &conn, client_config.num_receive_streams, client_config.num_send_streams).await?;
+        let res = PacketManager::spawn_receive_thread(&addr.to_string(), recv_streams, runtime.as_ref())?;
+        new_rxs.write().await.push((addr.to_string(), res));
+        new_send_streams.write().await.push((addr.to_string(), client_send_streams));
+        let _ = server_connection.insert(conn);
         Ok(())
     }
 

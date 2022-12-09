@@ -4,9 +4,10 @@ _"This library stinks!" ... "Unless you like durian"_
 `durian` is a client-server networking library built on top of the [QUIC](https://en.wikipedia.org/wiki/QUIC) protocol which is
 implemented in Rust by [quinn](https://github.com/quinn-rs/quinn).
 
-It provides a thin abstraction layer above the lower-level details of byte management,
+It provides a thin abstraction layer above the lower-level details of connection management, byte management,
 framing, and more, to make writing netcode easier and allow the user to focus on the messaging
-contents instead.
+contents instead.  Serialization and deserialization are built into the APIs so you can send and receive exact
+Packets as structs for ease of development.
 
 `durian` is a general purpose library, but was made primarily for me to dabble in game development.  It has been
 tested and working with the [Bevy](https://bevyengine.org/) game engine.
@@ -29,7 +30,7 @@ free to try it out!
 * [x] Simultaneous basic Client/Server connection management and operations
 * [x] Both async and sync APIs for different caller contexts
 * [x] Multiplexing without head of line blocking (QUIC feature)
-   * Dedicated stream for each Packet type and multi-threaded
+    * Dedicated stream for each Packet type and multi-threaded
 * [x] Reliable packets: guaranteed delivery of all messages
 * [x] Ordered packets: packets are received in the same order they are sent on each stream
 * [x] Packet Fragmentation and re-assembly automatically for you
@@ -40,8 +41,8 @@ free to try it out!
 
 * [ ] Certificate authentication between client-server
 * [ ] More complex connection configurations such as:
-   * Pluggable cryptography
-   * Connection timeouts, keep-alive, or other params
+    * Pluggable cryptography
+    * Connection timeouts, keep-alive, or other params
 * [ ] Handshake protocol
 * [ ] Connection/streams re-establishment
 * [ ] Better Error handling/messaging
@@ -132,12 +133,12 @@ and server side:
    The ordering of [`Packet`](https://docs.rs/durian/latest/durian/trait.Packet.html) registration matters for the `receive` channel and
    `send` channel each - the client and server must register the same packets in the same order,
    for the opposite channels.
-   - In other words, the client must register `receive` packets in the
-     same order the server registers the same as `send` packets, and vice versa, the client must
-     register `send` packets in the same order the server registers the same as `receive` packets.
-     This helps to ensure the client and servers are in sync on what Packets to send/receive, almost
-     like ensuring they are on the same "version" so to speak, and is used to properly identify
-     Packets.
+    - In other words, the client must register `receive` packets in the
+      same order the server registers the same as `send` packets, and vice versa, the client must
+      register `send` packets in the same order the server registers the same as `receive` packets.
+      This helps to ensure the client and servers are in sync on what Packets to send/receive, almost
+      like ensuring they are on the same "version" so to speak, and is used to properly identify
+      Packets.
 
 3. Initiate a connection with [`init_connections()`](https://docs.rs/durian/latest/durian/struct.PacketManager.html#method.init_connections) or the async variant
    [`async_init_connections()`](https://docs.rs/durian/latest/durian/struct.PacketManager.html#method.async_init_connections)

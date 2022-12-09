@@ -4,9 +4,10 @@ _"This library stinks!" ... "Unless you like durian"_
 `durian` is a client-server networking library built on top of the [QUIC](https://en.wikipedia.org/wiki/QUIC) protocol which is
 implemented in Rust by [quinn](https://github.com/quinn-rs/quinn).
 
-It provides a thin abstraction layer above the lower-level details of byte management,
+It provides a thin abstraction layer above the lower-level details of connection management, byte management,
 framing, and more, to make writing netcode easier and allow the user to focus on the messaging
-contents instead.
+contents instead.  Serialization and deserialization are built into the APIs so you can send and receive exact
+Packets as structs for ease of development.
 
 `durian` is a general purpose library, but was made primarily for me to dabble in game development.  It has been
 tested and working with the [Bevy](https://bevyengine.org/) game engine.

@@ -237,7 +237,7 @@ pub fn error_only_message(tokens: TokenStream) -> TokenStream {
 
     let modified = quote! {
         impl #name {
-            fn new<S: Into<String>>(message: S) -> Self {
+            pub fn new<S: Into<String>>(message: S) -> Self {
                 #name {
                     message: message.into()
                 }
