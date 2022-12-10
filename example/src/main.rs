@@ -53,7 +53,6 @@ impl PacketBuilder<Identifier> for IdentifierPacketBuilder {
 fn sync_example() {
     let client_addr = "127.0.0.1:5001";
     let server_addr = "127.0.0.1:5000";
-    let alpn_protocols: &[&[u8]] = &[b"hq-29"];
 
     // Server example
     let mut server_manager = PacketManager::new();
@@ -70,7 +69,10 @@ fn sync_example() {
     // number of clients).  A thread will be spun up to wait for extra clients beyond the number
     // to block on.
     let mut server_config = ServerConfig::new(server_addr, 0, Some(1), 3, 2);
-    server_config.with_alpn_protocols(alpn_protocols);
+
+    // Here you can set various optional configurations
+    // server_config.with_alpn_protocols(&[b"hq-29"]);
+
     server_manager.init_server(server_config).unwrap();
 
     // Client example
@@ -87,7 +89,10 @@ fn sync_example() {
     // Since this is the client-side, this is a blocking call that waits until the connection is
     // established.
     let mut client_config = ClientConfig::new(client_addr, server_addr, 2, 3);
-    client_config.with_alpn_protocols(alpn_protocols);
+
+    // Here you can set various optional configurations
+    // client_config.with_alpn_protocols(&[b"hq-29"]);
+
     client_manager.init_client(client_config).unwrap();
 
     // Below we show different ways to send/receive packets
