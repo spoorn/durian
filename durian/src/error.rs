@@ -1,15 +1,15 @@
+use derive_more::Display;
+use durian_macros::ErrorOnlyMessage;
+use quinn::ConnectError;
 use std::error::Error;
 use std::net::AddrParseError;
-use derive_more::Display;
-use quinn::ConnectError;
-use durian_macros::ErrorOnlyMessage;
 
 /// Error when calling [`PacketManager::register_receive_packet()`](`crate::PacketManager::register_receive_packet()`), [`PacketManager::received_all()`](`crate::PacketManager::received_all()`),
 /// [`PacketManager::async_received_all()`](`crate::PacketManager::async_received_all()`), [`PacketManager::received()`](`crate::PacketManager::received()`), [`PacketManager::async_received()`](`crate::PacketManager::async_received()`)
 #[derive(Debug, Clone, Display, ErrorOnlyMessage)]
 pub struct ReceiveError {
     /// Error message
-    pub message: String
+    pub message: String,
 }
 
 /// Error when calling [`PacketManager::register_send_packet()`](`crate::PacketManager::register_send_packet()`), [`PacketManager::broadcast()`](`crate::PacketManager::broadcast()`),
@@ -18,25 +18,24 @@ pub struct ReceiveError {
 #[derive(Debug, Clone, Display, ErrorOnlyMessage)]
 pub struct SendError {
     /// Error message
-    pub message: String
+    pub message: String,
 }
 
-/// Error when calling [`PacketManager::init_client()`](`crate::PacketManager::init_client()`), [`PacketManager::async_init_client()`](`crate::PacketManager::async_init_client()`) 
+/// Error when calling [`PacketManager::init_client()`](`crate::PacketManager::init_client()`), [`PacketManager::async_init_client()`](`crate::PacketManager::async_init_client()`)
 /// or [`PacketManager::init_server()`](`crate::PacketManager::init_server()`), [`PacketManager::async_init_server()`](`crate::PacketManager::async_init_server()`)
 #[derive(Debug, Clone, Display, ErrorOnlyMessage)]
 pub struct ConnectionError {
     /// Error message
-    pub message: String
+    pub message: String,
 }
 
 impl From<quinn::ConnectionError> for ConnectionError {
     fn from(e: quinn::ConnectionError) -> Self {
-       ConnectionError::new(format!("ConnectionError: {:?}", e))
+        ConnectionError::new(format!("ConnectionError: {:?}", e))
     }
 }
 
 impl From<Box<dyn Error>> for ConnectionError {
-
     fn from(e: Box<dyn Error>) -> Self {
         ConnectionError::new(format!("ConnectionError: {:?}", e))
     }

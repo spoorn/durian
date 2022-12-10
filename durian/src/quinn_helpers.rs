@@ -38,7 +38,7 @@ pub fn make_client_endpoint(
     bind_addr: SocketAddr,
     server_certs: &[&[u8]],
     keep_alive_interval: Option<Duration>,
-    idle_timeout: Option<Duration>
+    idle_timeout: Option<Duration>,
 ) -> Result<Endpoint, Box<dyn Error>> {
     let client_cfg = configure_client(server_certs, keep_alive_interval, idle_timeout)?;
     let mut endpoint = Endpoint::client(bind_addr)?;
@@ -54,8 +54,11 @@ pub fn make_client_endpoint(
 /// - a stream of incoming QUIC connections
 /// - server certificate serialized into DER format
 #[allow(unused)]
-pub fn make_server_endpoint(bind_addr: SocketAddr, keep_alive_interval: Option<Duration>,
-                            idle_timeout: Option<Duration>) -> Result<(Endpoint, Vec<u8>), Box<dyn Error>> {
+pub fn make_server_endpoint(
+    bind_addr: SocketAddr,
+    keep_alive_interval: Option<Duration>,
+    idle_timeout: Option<Duration>,
+) -> Result<(Endpoint, Vec<u8>), Box<dyn Error>> {
     let (server_config, server_cert) = configure_server(keep_alive_interval, idle_timeout)?;
     let endpoint = Endpoint::server(server_config, bind_addr)?;
     Ok((endpoint, server_cert))
@@ -66,13 +69,16 @@ pub fn make_server_endpoint(bind_addr: SocketAddr, keep_alive_interval: Option<D
 /// ## Args
 ///
 /// - server_certs: a list of trusted certificates in DER format.
-fn configure_client(server_certs: &[&[u8]], keep_alive_interval: Option<Duration>,
-                    idle_timeout: Option<Duration>) -> Result<ClientConfig, Box<dyn Error>> {
+fn configure_client(
+    server_certs: &[&[u8]],
+    keep_alive_interval: Option<Duration>,
+    idle_timeout: Option<Duration>,
+) -> Result<ClientConfig, Box<dyn Error>> {
     // let mut certs = rustls::RootCertStore::empty();
     // for cert in server_certs {
     //     certs.add(&rustls::Certificate(cert.to_vec()))?;
     // }
-    // 
+    //
     // Ok(ClientConfig::with_root_certificates(certs))
     let crypto = rustls::ClientConfig::builder()
         .with_safe_defaults()
@@ -90,8 +96,10 @@ fn configure_client(server_certs: &[&[u8]], keep_alive_interval: Option<Duration
 }
 
 /// Returns default server configuration along with its certificate.
-fn configure_server(keep_alive_interval: Option<Duration>,
-                    idle_timeout: Option<Duration>) -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
+fn configure_server(
+    keep_alive_interval: Option<Duration>,
+    idle_timeout: Option<Duration>,
+) -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
     let cert_der = cert.serialize_der().unwrap();
     let priv_key = cert.serialize_private_key_der();
@@ -99,9 +107,7 @@ fn configure_server(keep_alive_interval: Option<Duration>,
     let priv_key = rustls::PrivateKey(priv_key);
 
     let mut server_config = ServerConfig::with_single_cert(cert_chain, priv_key)?;
-    let transport_config = Arc::get_mut(&mut server_config.transport)
-        .unwrap()
-        .keep_alive_interval(keep_alive_interval);
+    let transport_config = Arc::get_mut(&mut server_config.transport).unwrap().keep_alive_interval(keep_alive_interval);
     if let Some(idle_timeout) = idle_timeout {
         transport_config.max_idle_timeout(Some(IdleTimeout::try_from(idle_timeout)?));
     }
