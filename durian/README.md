@@ -140,8 +140,9 @@ and server side:
       like ensuring they are on the same "version" so to speak, and is used to properly identify
       Packets.
 
-3. Initiate a connection with [`init_connections()`](https://docs.rs/durian/latest/durian/struct.PacketManager.html#method.init_connections) or the async variant
-   [`async_init_connections()`](https://docs.rs/durian/latest/durian/struct.PacketManager.html#method.async_init_connections)
+3. Initiate connection(s) with [`init_client()`](`PacketManager::init_client()`) (or the async variant [`async_init_client()`](`PacketManager::async_init_client()`)
+if on the client side, else use [`init_server()`](`PacketManager::init_server()`) (or the async variant [`async_init_server)`](`PacketManager::async_init_server()`)
+if on the server side.
 
 4. Send packets using any of [`broadcast()`](https://docs.rs/durian/latest/durian/struct.PacketManager.html#method.broadcast), [`send()`](https://docs.rs/durian/latest/durian/struct.PacketManager.html#method.send), [`send_to()`](https://docs.rs/durian/latest/durian/struct.PacketManager.html#method.send_to)
    or the respective `async` variants if calling from an async context already.  Receive packets

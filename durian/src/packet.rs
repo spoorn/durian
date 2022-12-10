@@ -2,6 +2,7 @@ use std::any::{Any, type_name, TypeId};
 use std::error::Error;
 use std::fmt::Debug;
 use std::sync::Arc;
+use std::time::Duration;
 
 use bimap::BiMap;
 use bytes::Bytes;
@@ -170,7 +171,21 @@ pub struct ClientConfig {
     pub num_receive_streams: u32,
     /// Number of `send` streams to open from client to server.  Must be equal to number of send packets registered
     /// through [`PacketManager::register_send_packet()`]
-    pub num_send_streams: u32
+    pub num_send_streams: u32,
+    /// Period of inactivity before sending a keep-alive packet
+    /// 
+    /// Keep-alive packets prevent an inactive but otherwise healthy connection from timing out.
+    /// 
+    /// None to disable, which is the default. Only one side of any given connection needs keep-alive enabled for 
+    /// the connection to be preserved. Must be set lower than the idle_timeout of both peers to be effective.
+    pub keep_alive_interval: Option<Duration>,
+    /// Maximum duration of inactivity to accept before timing out the connection.
+    /// The true idle timeout is the minimum of this and the peer's own max idle timeout. Defaults to None which 
+    /// represents an infinite timeout.
+    /// 
+    /// __WARNING: If a peer or its network path malfunctions or acts maliciously, an infinite idle timeout can result 
+    /// in permanently hung futures!__
+    pub idle_timeout: Option<Duration>
 }
 
 impl ClientConfig {
@@ -181,8 +196,22 @@ impl ClientConfig {
             addr: addr.into(),
             server_addr: server_addr.into(),
             num_receive_streams,
-            num_send_streams
+            num_send_streams,
+            keep_alive_interval: None,
+            idle_timeout: None
         }
+    }
+    
+    /// Set the keep alive interval
+    pub fn with_keep_alive_interval(&mut self, duration: Duration) -> &mut Self {
+        self.keep_alive_interval = Some(duration);
+        self
+    }
+    
+    /// Set the idle timeout
+    pub fn with_idle_timeout(&mut self, duration: Duration) -> &mut Self {
+        self.idle_timeout = Some(duration);
+        self
     }
 }
 
@@ -203,7 +232,21 @@ pub struct ServerConfig {
     pub num_receive_streams: u32,
     /// Number of `send` streams to open from client to server.  Must be equal to number of send packets registered
     /// through [`PacketManager::register_send_packet()`]
-    pub num_send_streams: u32
+    pub num_send_streams: u32,
+    /// Period of inactivity before sending a keep-alive packet
+    ///
+    /// Keep-alive packets prevent an inactive but otherwise healthy connection from timing out.
+    ///
+    /// None to disable, which is the default. Only one side of any given connection needs keep-alive enabled for 
+    /// the connection to be preserved. Must be set lower than the idle_timeout of both peers to be effective.
+    pub keep_alive_interval: Option<Duration>,
+    /// Maximum duration of inactivity to accept before timing out the connection.
+    /// The true idle timeout is the minimum of this and the peer's own max idle timeout. Defaults to None which 
+    /// represents an infinite timeout.
+    ///
+    /// __WARNING: If a peer or its network path malfunctions or acts maliciously, an infinite idle timeout can result 
+    /// in permanently hung futures!__
+    pub idle_timeout: Option<Duration>
 }
 
 impl ServerConfig {
@@ -215,7 +258,9 @@ impl ServerConfig {
             wait_for_clients,
             total_expected_clients,
             num_receive_streams,
-            num_send_streams
+            num_send_streams,
+            keep_alive_interval: None,
+            idle_timeout: None
         }
     }
 
@@ -226,7 +271,9 @@ impl ServerConfig {
             wait_for_clients,
             total_expected_clients: Some(wait_for_clients),
             num_receive_streams,
-            num_send_streams
+            num_send_streams,
+            keep_alive_interval: None,
+            idle_timeout: None
         }
     }
 
@@ -238,8 +285,22 @@ impl ServerConfig {
             wait_for_clients,
             total_expected_clients: None,
             num_receive_streams,
-            num_send_streams
+            num_send_streams,
+            keep_alive_interval: None,
+            idle_timeout: None
         }
+    }
+
+    /// Set the keep alive interval
+    pub fn with_keep_alive_interval(&mut self, duration: Duration) -> &mut Self {
+        self.keep_alive_interval = Some(duration);
+        self
+    }
+
+    /// Set the idle timeout
+    pub fn with_idle_timeout(&mut self, duration: Duration) -> &mut Self {
+        self.idle_timeout = Some(duration);
+        self
     }
 }
 
@@ -428,7 +489,7 @@ impl PacketManager {
                                 client_connections: &Arc<RwLock<HashMap<String, (u32, Connection)>>>) -> Result<(), ConnectionError> {
         debug!("Initiating server with {:?}", server_config);
 
-        let (endpoint, server_cert) = make_server_endpoint(server_config.addr.parse()?)?;
+        let (endpoint, server_cert) = make_server_endpoint(server_config.addr.parse()?, server_config.keep_alive_interval, server_config.idle_timeout)?;
         let num_receive_streams = server_config.num_receive_streams;
         let num_send_streams = server_config.num_send_streams;
 
@@ -518,7 +579,7 @@ impl PacketManager {
                                  server_connection: &mut Option<Connection>) -> Result<(), ConnectionError> {
         debug!("Initiating client with {:?}", client_config);
         // Bind this endpoint to a UDP socket on the given client address.
-        let endpoint = make_client_endpoint(client_config.addr.parse()?, &[])?;
+        let endpoint = make_client_endpoint(client_config.addr.parse()?, &[], client_config.keep_alive_interval, client_config.idle_timeout)?;
 
         // Connect to the server passing in the server name which is supposed to be in the server certificate.
         let conn = endpoint.connect(client_config.server_addr.parse()?, "server")?.await?;
