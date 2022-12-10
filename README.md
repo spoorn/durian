@@ -12,6 +12,10 @@ Packets as structs for ease of development.
 `durian` is a general purpose library, but was made primarily for me to dabble in game development.  It has been
 tested and working with the [Bevy](https://bevyengine.org/) game engine.
 
+Full documentation can be found at https://docs.rs/durian/latest/durian/
+
+Crates.io: https://crates.io/crates/durian/
+
 ### Disclaimer
 This library is in very early (but very active!) development, meaning a LOT of it will change rapidly.  
 In its current state, it's usable to create a quick multiplayer demo.  I use it myself to learn [game
@@ -30,19 +34,19 @@ free to try it out!
 * [x] Simultaneous basic Client/Server connection management and operations
 * [x] Both async and sync APIs for different caller contexts
 * [x] Multiplexing without head of line blocking (QUIC feature)
-    * Dedicated stream for each Packet type and multi-threaded
+   * Dedicated stream for each Packet type and multi-threaded
 * [x] Reliable packets: guaranteed delivery of all messages
 * [x] Ordered packets: packets are received in the same order they are sent on each stream
 * [x] Packet Fragmentation and re-assembly automatically for you
 * [x] Macros to ease creation of Packets
 * [x] Send and receive packets simultaneously
+* [x] Various Client/Server configurations (keep-alive-intervals, idle-timeout, etc.)
 
 ### Not yet done
 
 * [ ] Certificate authentication between client-server
 * [ ] More complex connection configurations such as:
-    * Pluggable cryptography
-    * Connection timeouts, keep-alive, or other params
+   * Pluggable cryptography
 * [ ] Handshake protocol
 * [ ] Connection/streams re-establishment
 * [ ] Better Error handling/messaging
@@ -133,12 +137,12 @@ and server side:
    The ordering of [`Packet`](https://docs.rs/durian/latest/durian/trait.Packet.html) registration matters for the `receive` channel and
    `send` channel each - the client and server must register the same packets in the same order,
    for the opposite channels.
-    - In other words, the client must register `receive` packets in the
-      same order the server registers the same as `send` packets, and vice versa, the client must
-      register `send` packets in the same order the server registers the same as `receive` packets.
-      This helps to ensure the client and servers are in sync on what Packets to send/receive, almost
-      like ensuring they are on the same "version" so to speak, and is used to properly identify
-      Packets.
+   - In other words, the client must register `receive` packets in the
+     same order the server registers the same as `send` packets, and vice versa, the client must
+     register `send` packets in the same order the server registers the same as `receive` packets.
+     This helps to ensure the client and servers are in sync on what Packets to send/receive, almost
+     like ensuring they are on the same "version" so to speak, and is used to properly identify
+     Packets.
 
 3. Initiate connection(s) with [`init_client()`](`PacketManager::init_client()`) (or the async variant [`async_init_client()`](`PacketManager::async_init_client()`)
    if on the client side, else use [`init_server()`](`PacketManager::init_server()`) (or the async variant [`async_init_server)`](`PacketManager::async_init_server()`)
@@ -165,41 +169,41 @@ struct ClientAck;
 struct InputMovement { direction: String }
 
 fn packet_manager_example() {
-    // Create PacketManager
-    let mut manager = PacketManager::new();
+   // Create PacketManager
+   let mut manager = PacketManager::new();
 
-    // Register send and receive packets
-    manager.register_receive_packet::<Position>(PositionPacketBuilder).unwrap();
-    manager.register_receive_packet::<ServerAck>(ServerAckPacketBuilder).unwrap();
-    manager.register_send_packet::<ClientAck>().unwrap();
-    manager.register_send_packet::<InputMovement>().unwrap();
+   // Register send and receive packets
+   manager.register_receive_packet::<Position>(PositionPacketBuilder).unwrap();
+   manager.register_receive_packet::<ServerAck>(ServerAckPacketBuilder).unwrap();
+   manager.register_send_packet::<ClientAck>().unwrap();
+   manager.register_send_packet::<InputMovement>().unwrap();
 
-    // Initialize connection to an address
-    manager.init_connections(true, 2, 2, "127.0.0.1:5000", Some("127.0.0.1:5001"), 0, None).unwrap();
+   // Initialize connection to an address
+   manager.init_connections(true, 2, 2, "127.0.0.1:5000", Some("127.0.0.1:5001"), 0, None).unwrap();
 
-    // Send and receive packets
-    manager.broadcast(InputMovement { direction: "North".to_string() }).unwrap();
-    manager.received_all::<Position, PositionPacketBuilder>(false).unwrap();
+   // Send and receive packets
+   manager.broadcast(InputMovement { direction: "North".to_string() }).unwrap();
+   manager.received_all::<Position, PositionPacketBuilder>(false).unwrap();
 
-    // The above PacketManager is for the client.  Server side is similar except the packets
-    // are swapped between receive vs send channels.
+   // The above PacketManager is for the client.  Server side is similar except the packets
+   // are swapped between receive vs send channels.
 
-    // Create PacketManager
-    let mut server_manager = PacketManager::new();
+   // Create PacketManager
+   let mut server_manager = PacketManager::new();
 
-    // Register send and receive packets
-    server_manager.register_receive_packet::<ClientAck>(ClientAckPacketBuilder).unwrap();
-    server_manager.register_receive_packet::<InputMovement>(InputMovementPacketBuilder).unwrap();
-    server_manager.register_send_packet::<Position>().unwrap();
-    server_manager.register_send_packet::<ServerAck>().unwrap();
+   // Register send and receive packets
+   server_manager.register_receive_packet::<ClientAck>(ClientAckPacketBuilder).unwrap();
+   server_manager.register_receive_packet::<InputMovement>(InputMovementPacketBuilder).unwrap();
+   server_manager.register_send_packet::<Position>().unwrap();
+   server_manager.register_send_packet::<ServerAck>().unwrap();
 
-    // Initialize a client
-    let client_config = ClientConfig::new("127.0.0.1:5001", "127.0.0.1:5000", 2, 2);
-    server_manager.init_client(client_config).unwrap();
+   // Initialize a client
+   let client_config = ClientConfig::new("127.0.0.1:5001", "127.0.0.1:5000", 2, 2);
+   server_manager.init_client(client_config).unwrap();
 
-    // Send and receive packets
-    server_manager.broadcast(Position { x: 1, y: 3 }).unwrap();
-    server_manager.received_all::<InputMovement, InputMovementPacketBuilder>(false).unwrap();
+   // Send and receive packets
+   server_manager.broadcast(Position { x: 1, y: 3 }).unwrap();
+   server_manager.received_all::<InputMovement, InputMovementPacketBuilder>(false).unwrap();
 }
 ```
 
