@@ -1,6 +1,6 @@
+use durian::{bincode_packet, BinPacket, ClientConfig, Packet, PacketBuilder, PacketManager, ServerConfig, UnitPacket};
 use durian::bytes::Bytes;
 use durian::serde::{Deserialize, Serialize};
-use durian::{bincode_packet, BinPacket, ClientConfig, Packet, PacketBuilder, PacketManager, ServerConfig, UnitPacket};
 use std::error::Error;
 
 // Using #[bincode_packet]
@@ -41,6 +41,7 @@ impl Packet for Identifier {
 }
 
 struct IdentifierPacketBuilder;
+
 impl PacketBuilder<Identifier> for IdentifierPacketBuilder {
     fn read(&self, bytes: Bytes) -> Result<Identifier, Box<dyn Error>> {
         let name = std::str::from_utf8(&bytes)?.to_string();
@@ -52,7 +53,7 @@ impl PacketBuilder<Identifier> for IdentifierPacketBuilder {
 fn sync_example() {
     let client_addr = "127.0.0.1:5001";
     let server_addr = "127.0.0.1:5000";
-    let alpn_protocols = &[b"hq-29"];
+    let alpn_protocols: &[&[u8]] = &[b"hq-29"];
 
     // Server example
     let mut server_manager = PacketManager::new();
