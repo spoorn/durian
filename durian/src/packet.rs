@@ -1330,7 +1330,24 @@ impl PacketManager {
         if client_connections.is_empty() {
             panic!("get_client_id() should only be called on the server side for a valid client Socket address");
         }
-        if client_connections.contains_key(&addr) {
+        if !client_connections.contains_key(&addr) {
+            return None;
+        }
+        Some(client_connections.get(&addr).unwrap().0)
+    }
+
+    /// Returns the `Client ID` for a Socket address.  Client IDs start from 0 and are incremented in the order each
+    /// client is connected to the server.  This can be helpful to associated some sort of numerical ID with clients.
+    ///
+    /// Same as [`get_client_id`](`PacketManager::get_client_id()`), except returns a `Future` and can be called from
+    /// an async context.
+    pub async fn async_get_client_id<S: Into<String>>(&self, addr: S) -> Option<u32> {
+        let client_connections = self.client_connections.read().await;
+        let addr = addr.into();
+        if client_connections.is_empty() {
+            panic!("get_client_id() should only be called on the server side for a valid client Socket address");
+        }
+        if !client_connections.contains_key(&addr) {
             return None;
         }
         Some(client_connections.get(&addr).unwrap().0)
@@ -1612,6 +1629,8 @@ mod tests {
                 let (addr, unwrapped) = received_all.remove(0);
                 let (addr2, unwrapped2) = received_all.remove(0);
                 assert!((addr == client_addr || addr == client2_addr) && (addr != addr2));
+                assert!(m.async_get_client_id(addr).await.is_some());
+                assert!(m.async_get_client_id(addr2).await.is_some());
                 if unwrapped.is_some() {
                     let mut packets = unwrapped.unwrap();
                     recv_packets += packets.len();
@@ -1630,6 +1649,8 @@ mod tests {
                 let (addr, unwrapped) = received_all.remove(0);
                 let (addr2, unwrapped2) = received_all.remove(0);
                 assert!((addr == client_addr || addr == client2_addr) && (addr != addr2));
+                assert!(m.async_get_client_id(addr).await.is_some());
+                assert!(m.async_get_client_id(addr2).await.is_some());
                 if unwrapped.is_some() {
                     let mut packets = unwrapped.unwrap();
                     recv_packets += packets.len();
@@ -1966,6 +1987,8 @@ mod tests {
                 let (addr, unwrapped) = received_all.remove(0);
                 let (addr2, unwrapped2) = received_all.remove(0);
                 assert!((addr == client_addr || addr == client2_addr) && (addr != addr2));
+                assert!(m.async_get_client_id(addr).await.is_some());
+                assert!(m.async_get_client_id(addr2).await.is_some());
                 if unwrapped.is_some() {
                     let mut packets = unwrapped.unwrap();
                     recv_packets += packets.len();
