@@ -92,7 +92,7 @@ pub fn setup(num_clients: u32, start_port: u32) -> (Vec<PacketManager>, PacketMa
     (client_managers, server_manager)
 }
 
-pub fn sync_example_multiclient_server(client_managers: &mut Vec<PacketManager>, server_manager: &mut PacketManager) {
+pub fn sync_example_multiclient_server(client_managers: &mut [PacketManager], server_manager: &mut PacketManager) {
     let server_addr = "127.0.0.1:5000";
 
     // broadcast packets to all recipients, and receive all packets from sender
