@@ -260,6 +260,15 @@ pub struct ServerConfig {
     /// __WARNING: If a peer or its network path malfunctions or acts maliciously, an infinite idle timeout can result
     /// in permanently hung futures!__
     pub idle_timeout: Option<Duration>,
+
+    /// Protocols to send to server if applicable.
+    ///
+    /// ## Example:
+    ///
+    /// ```
+    /// config.with_alpn_protocols(&[b"hq-29"]);
+    /// ```
+    pub alpn_protocols: Option<Vec<Vec<u8>>>,
 }
 
 impl ServerConfig {
@@ -279,6 +288,7 @@ impl ServerConfig {
             num_send_streams,
             keep_alive_interval: None,
             idle_timeout: None,
+            alpn_protocols: None
         }
     }
 
@@ -297,6 +307,7 @@ impl ServerConfig {
             num_send_streams,
             keep_alive_interval: None,
             idle_timeout: None,
+            alpn_protocols: None
         }
     }
 
@@ -316,6 +327,7 @@ impl ServerConfig {
             num_send_streams,
             keep_alive_interval: None,
             idle_timeout: None,
+            alpn_protocols: None
         }
     }
 
@@ -328,6 +340,12 @@ impl ServerConfig {
     /// Set the idle timeout
     pub fn with_idle_timeout(&mut self, duration: Duration) -> &mut Self {
         self.idle_timeout = Some(duration);
+        self
+    }
+
+    /// Set the ALPN protocols
+    pub fn with_alpn_protocols(&mut self, protocols: &[&[u8]]) -> &mut Self {
+        self.alpn_protocols = Some(protocols.iter().map(|&x| x.into()).collect());
         self
     }
 }
@@ -532,6 +550,7 @@ impl PacketManager {
             server_config.addr.parse()?,
             server_config.keep_alive_interval,
             server_config.idle_timeout,
+            server_config.alpn_protocols
         )?;
         let num_receive_streams = server_config.num_receive_streams;
         let num_send_streams = server_config.num_send_streams;
