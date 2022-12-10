@@ -13,13 +13,13 @@ use log::{debug, error, trace};
 use quinn::{Connection, RecvStream, SendStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::runtime::Runtime;
+use tokio::sync::{mpsc, RwLock};
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::Receiver;
-use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
 
-use crate::quinn_helpers::{make_client_endpoint, make_server_endpoint};
 use crate::{ConnectionError, ReceiveError, SendError};
+use crate::quinn_helpers::{make_client_endpoint, make_server_endpoint};
 
 const FRAME_BOUNDARY: &[u8] = b"AAAAAA031320050421";
 
@@ -186,6 +186,15 @@ pub struct ClientConfig {
     /// __WARNING: If a peer or its network path malfunctions or acts maliciously, an infinite idle timeout can result
     /// in permanently hung futures!__
     pub idle_timeout: Option<Duration>,
+
+    /// Protocols to send to server if applicable.
+    ///
+    /// ## Example:
+    ///
+    /// ```
+    /// config.with_alpn_protocols(&[b"hq-29"]);
+    /// ```
+    pub alpn_protocols: Option<Vec<Vec<u8>>>,
 }
 
 impl ClientConfig {
@@ -198,6 +207,7 @@ impl ClientConfig {
             num_send_streams,
             keep_alive_interval: None,
             idle_timeout: None,
+            alpn_protocols: None,
         }
     }
 
@@ -210,6 +220,12 @@ impl ClientConfig {
     /// Set the idle timeout
     pub fn with_idle_timeout(&mut self, duration: Duration) -> &mut Self {
         self.idle_timeout = Some(duration);
+        self
+    }
+
+    /// Set the ALPN protocols
+    pub fn with_alpn_protocols(&mut self, protocols: &[&[u8]]) -> &mut Self {
+        self.alpn_protocols = Some(protocols.iter().map(|&x| x.into()).collect());
         self
     }
 }
@@ -246,6 +262,15 @@ pub struct ServerConfig {
     /// __WARNING: If a peer or its network path malfunctions or acts maliciously, an infinite idle timeout can result
     /// in permanently hung futures!__
     pub idle_timeout: Option<Duration>,
+
+    /// Protocols to send to server if applicable.
+    ///
+    /// ## Example:
+    ///
+    /// ```
+    /// config.with_alpn_protocols(&[b"hq-29"]);
+    /// ```
+    pub alpn_protocols: Option<Vec<Vec<u8>>>,
 }
 
 impl ServerConfig {
@@ -265,6 +290,7 @@ impl ServerConfig {
             num_send_streams,
             keep_alive_interval: None,
             idle_timeout: None,
+            alpn_protocols: None
         }
     }
 
@@ -283,6 +309,7 @@ impl ServerConfig {
             num_send_streams,
             keep_alive_interval: None,
             idle_timeout: None,
+            alpn_protocols: None
         }
     }
 
@@ -302,6 +329,7 @@ impl ServerConfig {
             num_send_streams,
             keep_alive_interval: None,
             idle_timeout: None,
+            alpn_protocols: None
         }
     }
 
@@ -314,6 +342,12 @@ impl ServerConfig {
     /// Set the idle timeout
     pub fn with_idle_timeout(&mut self, duration: Duration) -> &mut Self {
         self.idle_timeout = Some(duration);
+        self
+    }
+
+    /// Set the ALPN protocols
+    pub fn with_alpn_protocols(&mut self, protocols: &[&[u8]]) -> &mut Self {
+        self.alpn_protocols = Some(protocols.iter().map(|&x| x.into()).collect());
         self
     }
 }
@@ -428,7 +462,7 @@ impl PacketManager {
             &self.new_send_streams,
             &mut self.server_connection,
         )
-        .await
+            .await
     }
 
     /// Initialize a server side `PacketManager`
@@ -487,7 +521,7 @@ impl PacketManager {
             &self.new_send_streams,
             &self.client_connections,
         )
-        .await
+            .await
     }
 
     fn validate_connection_prereqs(
@@ -519,6 +553,7 @@ impl PacketManager {
             server_config.addr.parse()?,
             server_config.keep_alive_interval,
             server_config.idle_timeout,
+            server_config.alpn_protocols
         )?;
         let num_receive_streams = server_config.num_receive_streams;
         let num_send_streams = server_config.num_send_streams;
@@ -539,7 +574,7 @@ impl PacketManager {
                 num_receive_streams,
                 num_send_streams,
             )
-            .await?;
+                .await?;
             let res = PacketManager::spawn_receive_thread(&addr.to_string(), recv_streams, runtime.as_ref())?;
             new_rxs.write().await.push((addr.to_string(), res));
             new_send_streams.write().await.push((addr.to_string(), server_send_streams));
@@ -571,7 +606,7 @@ impl PacketManager {
                             num_receive_streams,
                             num_send_streams,
                         )
-                        .await?;
+                            .await?;
                         let res =
                             PacketManager::spawn_receive_thread(&addr.to_string(), recv_streams, arc_runtime.as_ref())?;
                         arc_rx.write().await.push((addr.to_string(), res));
@@ -595,7 +630,7 @@ impl PacketManager {
                                 num_receive_streams,
                                 num_send_streams,
                             )
-                            .await?;
+                                .await?;
                             let res = PacketManager::spawn_receive_thread(
                                 &addr.to_string(),
                                 recv_streams,
@@ -635,6 +670,7 @@ impl PacketManager {
             &[],
             client_config.keep_alive_interval,
             client_config.idle_timeout,
+            client_config.alpn_protocols
         )?;
 
         // Connect to the server passing in the server name which is supposed to be in the server certificate.
@@ -647,7 +683,7 @@ impl PacketManager {
             client_config.num_receive_streams,
             client_config.num_send_streams,
         )
-        .await?;
+            .await?;
         let res = PacketManager::spawn_receive_thread(&addr.to_string(), recv_streams, runtime.as_ref())?;
         new_rxs.write().await.push((addr.to_string(), res));
         new_send_streams.write().await.push((addr.to_string(), client_send_streams));
@@ -895,7 +931,7 @@ impl PacketManager {
                             &self.recv_packet_builders,
                             &self.rx,
                         )
-                        .await?,
+                            .await?,
                     ));
                 }
                 Ok(res)
@@ -930,7 +966,7 @@ impl PacketManager {
                     &self.recv_packet_builders,
                     &self.rx,
                 )
-                .await?,
+                    .await?,
             ));
         }
         Ok(res)
@@ -1002,7 +1038,7 @@ impl PacketManager {
             &self.recv_packet_builders,
             &self.rx,
         )
-        .await
+            .await
     }
 
     // Assumes does not have more than one client to send to, should be checked by callers
@@ -1420,11 +1456,10 @@ impl PacketManager {
 mod tests {
     use std::time::Duration;
 
-    use tokio::sync::mpsc;
-    use tokio::time::sleep;
-
     use durian::packet::PacketManager;
     use durian_macros::bincode_packet;
+    use tokio::sync::mpsc;
+    use tokio::time::sleep;
 
     use crate as durian;
     use crate::{ClientConfig, ServerConfig};
@@ -1468,14 +1503,14 @@ mod tests {
                 assert!(m
                     .async_send::<Other>(Other {
                         name: "spoorn".to_string(),
-                        id: 4
+                        id: 4,
                     })
                     .await
                     .is_ok());
                 assert!(m
                     .async_send::<Other>(Other {
                         name: "kiko".to_string(),
-                        id: 6
+                        id: 6,
                     })
                     .await
                     .is_ok());
@@ -1494,12 +1529,12 @@ mod tests {
                     vec![
                         Other {
                             name: "mango".to_string(),
-                            id: 1
+                            id: 1,
                         },
                         Other {
                             name: "luna".to_string(),
-                            id: 3
-                        }
+                            id: 3,
+                        },
                     ]
                 );
             }
@@ -1530,14 +1565,14 @@ mod tests {
             assert!(manager
                 .async_send::<Other>(Other {
                     name: "mango".to_string(),
-                    id: 1
+                    id: 1,
                 })
                 .await
                 .is_ok());
             assert!(manager
                 .async_send::<Other>(Other {
                     name: "luna".to_string(),
-                    id: 3
+                    id: 3,
                 })
                 .await
                 .is_ok());
@@ -1556,12 +1591,12 @@ mod tests {
                 vec![
                     Other {
                         name: "spoorn".to_string(),
-                        id: 4
+                        id: 4,
                     },
                     Other {
                         name: "kiko".to_string(),
-                        id: 6
-                    }
+                        id: 6,
+                    },
                 ]
             );
         }
@@ -1606,14 +1641,14 @@ mod tests {
                     assert!(m
                         .async_broadcast::<Other>(Other {
                             name: "spoorn".to_string(),
-                            id: 4
+                            id: 4,
                         })
                         .await
                         .is_ok());
                     assert!(m
                         .async_broadcast::<Other>(Other {
                             name: "kiko".to_string(),
-                            id: 6
+                            id: 6,
                         })
                         .await
                         .is_ok());
@@ -1682,7 +1717,7 @@ mod tests {
                         packet,
                         Other {
                             name: "mango".to_string(),
-                            id: 1
+                            id: 1,
                         }
                     );
                 } else {
@@ -1690,7 +1725,7 @@ mod tests {
                         packet,
                         Other {
                             name: "luna".to_string(),
-                            id: 3
+                            id: 3,
                         }
                     );
                 }
@@ -1727,14 +1762,14 @@ mod tests {
                     assert!(manager
                         .async_broadcast::<Other>(Other {
                             name: "mango".to_string(),
-                            id: 1
+                            id: 1,
                         })
                         .await
                         .is_ok());
                     assert!(manager
                         .async_broadcast::<Other>(Other {
                             name: "luna".to_string(),
-                            id: 3
+                            id: 3,
                         })
                         .await
                         .is_ok());
@@ -1781,7 +1816,7 @@ mod tests {
                         packet,
                         Other {
                             name: "spoorn".to_string(),
-                            id: 4
+                            id: 4,
                         }
                     );
                 } else {
@@ -1789,7 +1824,7 @@ mod tests {
                         packet,
                         Other {
                             name: "kiko".to_string(),
-                            id: 6
+                            id: 6,
                         }
                     );
                 }
@@ -1823,14 +1858,14 @@ mod tests {
                 assert!(manager
                     .async_broadcast::<Other>(Other {
                         name: "mango".to_string(),
-                        id: 1
+                        id: 1,
                     })
                     .await
                     .is_ok());
                 assert!(manager
                     .async_broadcast::<Other>(Other {
                         name: "luna".to_string(),
-                        id: 3
+                        id: 3,
                     })
                     .await
                     .is_ok());
@@ -1876,7 +1911,7 @@ mod tests {
                     packet,
                     Other {
                         name: "spoorn".to_string(),
-                        id: 4
+                        id: 4,
                     }
                 );
             } else {
@@ -1884,7 +1919,7 @@ mod tests {
                     packet,
                     Other {
                         name: "kiko".to_string(),
-                        id: 6
+                        id: 6,
                     }
                 );
             }
@@ -1938,8 +1973,8 @@ mod tests {
                             client_addr.to_string(),
                             Other {
                                 name: "spoorn".to_string(),
-                                id: 4
-                            }
+                                id: 4,
+                            },
                         )
                         .await
                         .is_ok());
@@ -1948,8 +1983,8 @@ mod tests {
                             client_addr.to_string(),
                             Other {
                                 name: "kiko".to_string(),
-                                id: 6
-                            }
+                                id: 6,
+                            },
                         )
                         .await
                         .is_ok());
@@ -1960,8 +1995,8 @@ mod tests {
                             client2_addr.to_string(),
                             Other {
                                 name: "spoorn".to_string(),
-                                id: 4
-                            }
+                                id: 4,
+                            },
                         )
                         .await
                         .is_ok());
@@ -1970,8 +2005,8 @@ mod tests {
                             client2_addr.to_string(),
                             Other {
                                 name: "kiko".to_string(),
-                                id: 6
-                            }
+                                id: 6,
+                            },
                         )
                         .await
                         .is_ok());
@@ -2038,7 +2073,7 @@ mod tests {
                         packet,
                         Other {
                             name: "mango".to_string(),
-                            id: 1
+                            id: 1,
                         }
                     );
                 } else {
@@ -2046,7 +2081,7 @@ mod tests {
                         packet,
                         Other {
                             name: "luna".to_string(),
-                            id: 3
+                            id: 3,
                         }
                     );
                 }
@@ -2084,7 +2119,7 @@ mod tests {
                     assert!(manager
                         .async_send::<Other>(Other {
                             name: "mango".to_string(),
-                            id: 1
+                            id: 1,
                         })
                         .await
                         .is_ok());
@@ -2093,8 +2128,8 @@ mod tests {
                             server_addr.to_string(),
                             Other {
                                 name: "luna".to_string(),
-                                id: 3
-                            }
+                                id: 3,
+                            },
                         )
                         .await
                         .is_ok());
@@ -2141,7 +2176,7 @@ mod tests {
                         packet,
                         Other {
                             name: "spoorn".to_string(),
-                            id: 4
+                            id: 4,
                         }
                     );
                 } else {
@@ -2149,7 +2184,7 @@ mod tests {
                         packet,
                         Other {
                             name: "kiko".to_string(),
-                            id: 6
+                            id: 6,
                         }
                     );
                 }
@@ -2184,7 +2219,7 @@ mod tests {
                 assert!(manager
                     .async_send::<Other>(Other {
                         name: "mango".to_string(),
-                        id: 1
+                        id: 1,
                     })
                     .await
                     .is_ok());
@@ -2193,8 +2228,8 @@ mod tests {
                         server_addr.to_string(),
                         Other {
                             name: "luna".to_string(),
-                            id: 3
-                        }
+                            id: 3,
+                        },
                     )
                     .await
                     .is_ok());
@@ -2240,7 +2275,7 @@ mod tests {
                     packet,
                     Other {
                         name: "spoorn".to_string(),
-                        id: 4
+                        id: 4,
                     }
                 );
             } else {
@@ -2248,7 +2283,7 @@ mod tests {
                     packet,
                     Other {
                         name: "kiko".to_string(),
-                        id: 6
+                        id: 6,
                     }
                 );
             }

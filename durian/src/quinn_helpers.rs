@@ -20,7 +20,7 @@ impl rustls::client::ServerCertVerifier for SkipServerVerification {
         _end_entity: &rustls::Certificate,
         _intermediates: &[rustls::Certificate],
         _server_name: &rustls::ServerName,
-        _scts: &mut dyn Iterator<Item = &[u8]>,
+        _scts: &mut dyn Iterator<Item=&[u8]>,
         _ocsp_response: &[u8],
         _now: std::time::SystemTime,
     ) -> Result<rustls::client::ServerCertVerified, rustls::Error> {
@@ -39,8 +39,9 @@ pub fn make_client_endpoint(
     server_certs: &[&[u8]],
     keep_alive_interval: Option<Duration>,
     idle_timeout: Option<Duration>,
+    alpn_protocols: Option<Vec<Vec<u8>>>,
 ) -> Result<Endpoint, Box<dyn Error>> {
-    let client_cfg = configure_client(server_certs, keep_alive_interval, idle_timeout)?;
+    let client_cfg = configure_client(server_certs, keep_alive_interval, idle_timeout, alpn_protocols)?;
     let mut endpoint = Endpoint::client(bind_addr)?;
     endpoint.set_default_client_config(client_cfg);
     Ok(endpoint)
@@ -58,8 +59,9 @@ pub fn make_server_endpoint(
     bind_addr: SocketAddr,
     keep_alive_interval: Option<Duration>,
     idle_timeout: Option<Duration>,
+    alpn_protocols: Option<Vec<Vec<u8>>>,
 ) -> Result<(Endpoint, Vec<u8>), Box<dyn Error>> {
-    let (server_config, server_cert) = configure_server(keep_alive_interval, idle_timeout)?;
+    let (server_config, server_cert) = configure_server(keep_alive_interval, idle_timeout, alpn_protocols)?;
     let endpoint = Endpoint::server(server_config, bind_addr)?;
     Ok((endpoint, server_cert))
 }
@@ -73,6 +75,7 @@ fn configure_client(
     server_certs: &[&[u8]],
     keep_alive_interval: Option<Duration>,
     idle_timeout: Option<Duration>,
+    alpn_protocols: Option<Vec<Vec<u8>>>,
 ) -> Result<ClientConfig, Box<dyn Error>> {
     // let mut certs = rustls::RootCertStore::empty();
     // for cert in server_certs {
@@ -80,10 +83,13 @@ fn configure_client(
     // }
     //
     // Ok(ClientConfig::with_root_certificates(certs))
-    let crypto = rustls::ClientConfig::builder()
+    let mut crypto = rustls::ClientConfig::builder()
         .with_safe_defaults()
         .with_custom_certificate_verifier(SkipServerVerification::new())
         .with_no_client_auth();
+    if let Some(alpn_protocols) = alpn_protocols {
+        crypto.alpn_protocols = alpn_protocols;
+    }
     let mut client_config = ClientConfig::new(Arc::new(crypto));
     let mut transport_config = TransportConfig::default();
     transport_config.keep_alive_interval(keep_alive_interval);
@@ -99,6 +105,7 @@ fn configure_client(
 fn configure_server(
     keep_alive_interval: Option<Duration>,
     idle_timeout: Option<Duration>,
+    alpn_protocols: Option<Vec<Vec<u8>>>,
 ) -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
     let cert_der = cert.serialize_der().unwrap();
@@ -106,7 +113,18 @@ fn configure_server(
     let cert_chain = vec![rustls::Certificate(cert_der.clone())];
     let priv_key = rustls::PrivateKey(priv_key);
 
-    let mut server_config = ServerConfig::with_single_cert(cert_chain, priv_key)?;
+    let mut server_crypto = rustls::ServerConfig::builder()
+        .with_safe_default_cipher_suites()
+        .with_safe_default_kx_groups()
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(cert_chain, priv_key)?;
+    server_crypto.max_early_data_size = u32::MAX;
+    if let Some(alpn_protocols) = alpn_protocols {
+        server_crypto.alpn_protocols = alpn_protocols;
+    }
+    let mut server_config = ServerConfig::with_crypto(Arc::new(server_crypto));
     let transport_config = Arc::get_mut(&mut server_config.transport).unwrap().keep_alive_interval(keep_alive_interval);
     if let Some(idle_timeout) = idle_timeout {
         transport_config.max_idle_timeout(Some(IdleTimeout::try_from(idle_timeout)?));
