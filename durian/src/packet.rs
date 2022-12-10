@@ -1,4 +1,6 @@
-use std::any::{Any, type_name, TypeId};
+#![allow(clippy::type_complexity)]
+
+use std::any::{type_name, Any, TypeId};
 use std::error::Error;
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -358,6 +360,7 @@ impl PacketManager {
     ///
     /// # Panic
     /// If the [`Runtime`] could not be created.  Usually happens if you call `new()` from an existing async runtime.
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build();
         match runtime {

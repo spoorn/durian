@@ -79,6 +79,7 @@ pub fn bincode_packet(_attr: TokenStream, tokens: TokenStream) -> TokenStream {
                         panic!("Struct annotated with #[bincode_packet] and has named fields cannot have empty number of fields")
                     }
                     // See https://github.com/serde-rs/serde/issues/1465 for why serde macro is needed
+                    #[allow(clippy::needless_return)]
                     return quote! {
                         #[derive(durian::serde::Serialize, durian::serde::Deserialize, durian::BinPacket)]
                         #[serde(crate = "durian::serde")]
@@ -87,6 +88,7 @@ pub fn bincode_packet(_attr: TokenStream, tokens: TokenStream) -> TokenStream {
                     .into();
                 }
                 Fields::Unit => {
+                    #[allow(clippy::needless_return)]
                     return quote! {
                         #[derive(durian::UnitPacket)]
                         #input
@@ -139,6 +141,7 @@ pub fn bin_packet(tokens: TokenStream) -> TokenStream {
     let name = input.ident;
     let packet_builder_name = Ident::new((name.to_string() + "PacketBuilder").as_str(), Span::call_site());
 
+    #[allow(clippy::needless_return)]
     return quote! {
         impl durian::Packet for #name {
             fn as_bytes(&self) -> durian::bytes::Bytes {
@@ -192,6 +195,7 @@ pub fn unit_packet(tokens: TokenStream) -> TokenStream {
     let name_str = format!("\"{}\"", name);
     let packet_builder_name = Ident::new((name.to_string() + "PacketBuilder").as_str(), Span::call_site());
 
+    #[allow(clippy::needless_return)]
     return quote! {
         impl durian::Packet for #name {
             fn as_bytes(&self) -> durian::bytes::Bytes {
@@ -229,7 +233,7 @@ pub fn error_only_message(tokens: TokenStream) -> TokenStream {
 
     let mut has_message = false;
     for field in fields_punct.iter() {
-        if field.ident.as_ref().unwrap().to_string() == "message".to_string() {
+        if *field.ident.as_ref().unwrap() == *"message" {
             has_message = true;
             break;
         }
