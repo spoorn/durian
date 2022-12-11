@@ -215,6 +215,94 @@ pub fn unit_packet(tokens: TokenStream) -> TokenStream {
     .into();
 }
 
+/// Convenience derive macro that implements [`Deref`] and [`DerefMut`] for a struct that contains a 
+/// `manager: PacketManager` field.
+/// 
+/// This is especially useful in situations where you must wrap a PacketManager behind a struct, such as in Bevy where
+/// you want to insert the PacketManager as a Resource, but can't annotate the PacketManager struct itself.
+/// 
+/// For example:
+/// 
+/// ```rust
+/// #[derive(DerefPacketManager)]
+/// struct ClientPacketManager {
+///     manager: PacketManager
+/// }
+/// ```
+/// 
+/// Generates this code:
+/// 
+/// ```rust
+/// struct ClientPacketManager {
+///     manager: PacketManager
+/// }
+/// 
+/// impl std::ops::Deref for ClientPacketManager {
+///     type Target = (durian::PacketManager);
+/// 
+///     fn deref(&self) -> &Self::Target {
+///         &self.manager
+///     }
+/// }
+/// 
+/// impl std::ops::DerefMut for ClientPacketManager {
+///     fn deref_mut(&mut self) -> &mut Self::Target {
+///         &mut self.manager
+///     }
+/// }
+/// ```
+/// 
+/// You can then automatically access `PacketManager` functions through a `ClientPacketManager` like this:
+/// 
+/// ```rust
+/// let manager = ClientPacketManager { manager: PacketManager::new() };
+/// // Directly call PacketManager functions through our manager variable without accessing the underlying field
+/// manager.init_client(ClientConfig::new("127.0.0.1:5001", "127.0.0.1:5000", 2, 2);
+/// ```
+#[proc_macro_derive(DerefPacketManager)]
+pub fn deref_packet_manager(tokens: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(tokens as DeriveInput);
+    let name = input.ident;
+
+    match input.data {
+        Data::Struct(DataStruct {
+                         fields: Fields::Named(fields),
+                         ..
+                     }) => {
+            let mut has_manager = false;
+            for field in fields.named.iter() {
+                if *field.ident.as_ref().unwrap() == *"manager" {
+                    has_manager = true;
+                    break;
+                }
+            }
+
+            if !has_manager {
+                panic!("DerefPacketManager can only be used on a struct with a 'manager: PacketManager' field")
+            }
+        },
+        _ => panic!("Only structs with named fields can be annotated with ErrorMessageNew"),
+    };
+
+    #[allow(clippy::needless_return)]
+    return quote! {
+        impl std::ops::Deref for #name {
+            type Target = (durian::PacketManager);
+        
+            fn deref(&self) -> &Self::Target {
+                &self.manager
+            }
+        }
+        
+        impl std::ops::DerefMut for #name {
+            fn deref_mut(&mut self) -> &mut Self::Target {
+                &mut self.manager
+            }
+        }
+    }
+    .into();
+}
+
 /// Implements a `new()` function for a struct that contains only a `message: String` field
 ///
 /// Not really for public use.  Used internally for errors in the `durian` crate.
