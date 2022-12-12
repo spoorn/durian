@@ -40,7 +40,10 @@ free to try it out!
 * [x] Packet Fragmentation and re-assembly automatically for you
 * [x] Macros to ease creation of Packets
 * [x] Send and receive packets simultaneously
-* [x] Various Client/Server configurations (keep-alive-intervals, idle-timeout, etc.)
+* [x] Various Client/Server configurations
+  * keep-alive-intervals
+  * idle-timeout
+  * ALPN Protocol
 
 ### Not yet done
 
@@ -49,6 +52,7 @@ free to try it out!
    * Pluggable cryptography
 * [ ] Handshake protocol
 * [ ] Connection/streams re-establishment
+* [ ] Reusing an Endpoint across multiple PacketManagers (for client connected to multiple servers, or having different Packet contracts)
 * [ ] Better Error handling/messaging
 * [ ] Unreliable packets
 * [ ] Unordered packets

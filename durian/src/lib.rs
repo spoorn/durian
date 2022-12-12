@@ -218,3 +218,7 @@ pub use serde;
 
 #[allow(unused_imports)]
 pub use bincode;
+
+/// For [`PacketManager::get_source()`]
+#[allow(unused_imports)]
+pub use quinn::Endpoint;

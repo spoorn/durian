@@ -3,6 +3,7 @@
 use std::any::{type_name, Any, TypeId};
 use std::error::Error;
 use std::fmt::Debug;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -10,7 +11,7 @@ use bimap::BiMap;
 use bytes::Bytes;
 use hashbrown::HashMap;
 use log::{debug, error, trace};
-use quinn::{Connection, RecvStream, SendStream};
+use quinn::{Connection, Endpoint, RecvStream, SendStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, RwLock};
@@ -18,7 +19,7 @@ use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::Receiver;
 use tokio::task::JoinHandle;
 
-use crate::{ConnectionError, ReceiveError, SendError};
+use crate::{CloseError, ConnectionError, ReceiveError, SendError};
 use crate::quinn_helpers::{make_client_endpoint, make_server_endpoint};
 
 const FRAME_BOUNDARY: &[u8] = b"AAAAAA031320050421";
@@ -150,7 +151,8 @@ pub struct PacketManager {
     // Client addr to (index in above Vecs AKA a client ID, Connection)
     client_connections: Arc<RwLock<HashMap<String, (u32, Connection)>>>,
     server_connection: Option<Connection>,
-    source_addr: String,
+    // (Socket Address, Endpoint)
+    source: (String, Option<Arc<Endpoint>>),
     next_receive_id: u32,
     next_send_id: u32,
     // We construct a single Tokio Runtime to be used by each PacketManger instance, so that
@@ -192,6 +194,9 @@ pub struct ClientConfig {
     /// ## Example:
     ///
     /// ```
+    /// use durian::ServerConfig;
+    /// 
+    /// let mut config = ServerConfig::new("127.0.0.1:5000", 0, None, 2, 2);
     /// config.with_alpn_protocols(&[b"hq-29"]);
     /// ```
     pub alpn_protocols: Option<Vec<Vec<u8>>>,
@@ -268,6 +273,9 @@ pub struct ServerConfig {
     /// ## Example:
     ///
     /// ```
+    /// use durian::ServerConfig;
+    /// 
+    /// let mut config = ServerConfig::new("127.0.0.1:5000", 0, None, 2, 2);
     /// config.with_alpn_protocols(&[b"hq-29"]);
     /// ```
     pub alpn_protocols: Option<Vec<Vec<u8>>>,
@@ -352,6 +360,7 @@ impl ServerConfig {
     }
 }
 
+// TODO: Add a close_connection(addr)
 impl PacketManager {
     /// Create a new `PacketManager`
     ///
@@ -374,7 +383,7 @@ impl PacketManager {
                 new_rxs: Arc::new(RwLock::new(Vec::new())),
                 client_connections: Arc::new(RwLock::new(HashMap::new())),
                 server_connection: None,
-                source_addr: "".to_string(),
+                source: ("".to_string(), None),
                 next_receive_id: 0,
                 next_send_id: 0,
                 runtime: Arc::new(Some(runtime)),
@@ -399,7 +408,7 @@ impl PacketManager {
             new_rxs: Arc::new(Default::default()),
             client_connections: Arc::new(RwLock::new(HashMap::new())),
             server_connection: None,
-            source_addr: "".to_string(),
+            source: ("".to_string(), None),
             next_receive_id: 0,
             next_send_id: 0,
             runtime: Arc::new(None),
@@ -425,13 +434,14 @@ impl PacketManager {
             }
             Some(runtime) => {
                 self.validate_connection_prereqs(client_config.num_receive_streams, client_config.num_send_streams)?;
-                self.source_addr = client_config.addr.clone();
+                self.source.0 = client_config.addr.clone();
                 runtime.block_on(PacketManager::init_client_helper(
                     client_config,
                     &self.runtime,
                     &self.new_rxs,
                     &self.new_send_streams,
                     &mut self.server_connection,
+                    &mut self.source.1
                 ))
             }
         }
@@ -454,13 +464,14 @@ impl PacketManager {
             panic!("PacketManager has a runtime instance associated with it.  If you are using async_init_client(), make sure you create the PacketManager using new_for_async(), not new()");
         }
         self.validate_connection_prereqs(client_config.num_receive_streams, client_config.num_send_streams)?;
-        self.source_addr = client_config.addr.clone();
+        self.source.0 = client_config.addr.clone();
         PacketManager::init_client_helper(
             client_config,
             &self.runtime,
             &self.new_rxs,
             &self.new_send_streams,
             &mut self.server_connection,
+            &mut self.source.1
         )
             .await
     }
@@ -484,13 +495,14 @@ impl PacketManager {
             }
             Some(runtime) => {
                 self.validate_connection_prereqs(server_config.num_receive_streams, server_config.num_send_streams)?;
-                self.source_addr = server_config.addr.clone();
+                self.source.0 = server_config.addr.clone();
                 runtime.block_on(PacketManager::init_server_helper(
                     server_config,
                     &self.runtime,
                     &self.new_rxs,
                     &self.new_send_streams,
                     &self.client_connections,
+                    &mut self.source.1
                 ))
             }
         }
@@ -513,13 +525,14 @@ impl PacketManager {
             panic!("PacketManager has a runtime instance associated with it.  If you are using async_init_server(), make sure you create the PacketManager using new_for_async(), not new()");
         }
         self.validate_connection_prereqs(server_config.num_receive_streams, server_config.num_send_streams)?;
-        self.source_addr = server_config.addr.clone();
+        self.source.0 = server_config.addr.clone();
         PacketManager::init_server_helper(
             server_config,
             &self.runtime,
             &self.new_rxs,
             &self.new_send_streams,
             &self.client_connections,
+            &mut self.source.1
         )
             .await
     }
@@ -546,6 +559,7 @@ impl PacketManager {
         new_rxs: &Arc<RwLock<Vec<(String, HashMap<u32, (RwLock<Receiver<Bytes>>, JoinHandle<()>)>)>>>,
         new_send_streams: &Arc<RwLock<Vec<(String, HashMap<u32, RwLock<SendStream>>)>>>,
         client_connections: &Arc<RwLock<HashMap<String, (u32, Connection)>>>,
+        source_endpoint: &mut Option<Arc<Endpoint>>
     ) -> Result<(), ConnectionError> {
         debug!("Initiating server with {:?}", server_config);
 
@@ -555,6 +569,8 @@ impl PacketManager {
             server_config.idle_timeout,
             server_config.alpn_protocols
         )?;
+        let endpoint = Arc::new(endpoint);
+        let _ = source_endpoint.insert(Arc::clone(&endpoint));
         let num_receive_streams = server_config.num_receive_streams;
         let num_send_streams = server_config.num_send_streams;
 
@@ -581,6 +597,8 @@ impl PacketManager {
             client_connections.write().await.insert(addr.to_string(), (i, conn));
         }
 
+        // TODO: There can be any number of client connections at the same time.  This current blocks on accepting a
+        // single connection at a time, which can become a huge bottleneck
         if server_config.total_expected_clients.is_none()
             || server_config.total_expected_clients.unwrap() > server_config.wait_for_clients
         {
@@ -656,12 +674,14 @@ impl PacketManager {
         Ok(())
     }
 
+    // TODO: Add support for creating a client PacketManager using an existing endpoint
     async fn init_client_helper(
         client_config: ClientConfig,
         runtime: &Arc<Option<Runtime>>,
         new_rxs: &Arc<RwLock<Vec<(String, HashMap<u32, (RwLock<Receiver<Bytes>>, JoinHandle<()>)>)>>>,
         new_send_streams: &Arc<RwLock<Vec<(String, HashMap<u32, RwLock<SendStream>>)>>>,
         server_connection: &mut Option<Connection>,
+        source_endpoint: &mut Option<Arc<Endpoint>>
     ) -> Result<(), ConnectionError> {
         debug!("Initiating client with {:?}", client_config);
         // Bind this endpoint to a UDP socket on the given client address.
@@ -672,6 +692,8 @@ impl PacketManager {
             client_config.idle_timeout,
             client_config.alpn_protocols
         )?;
+        let endpoint = Arc::new(endpoint);
+        let _ = source_endpoint.insert(Arc::clone(&endpoint));
 
         // Connect to the server passing in the server name which is supposed to be in the server certificate.
         let conn = endpoint.connect(client_config.server_addr.parse()?, "server")?.await?;
@@ -829,12 +851,13 @@ impl PacketManager {
         Ok(rxs)
     }
 
-    /// Returns the source address of this PacketManager as a String
+    /// Returns the source address and Endpoint of this PacketManager as a Tuple (String, Option<Endpoint>)
     ///
     /// # Returns
     /// Source address is the server address if this PacketManager is for a server, else the client address.
-    pub fn get_source_addr(&self) -> String {
-        self.source_addr.to_string()
+    /// Endpoint is listening Endpoint at the source Socket Address
+    pub fn get_source(&self) -> &(String, Option<Arc<Endpoint>>) {
+        &self.source
     }
 
     /// Register a [`Packet`] on a `receive` stream/channel, and its associated [`PacketBuilder`]
@@ -1390,6 +1413,10 @@ impl PacketManager {
             return None;
         }
         Some(client_connections.get(&addr).unwrap().0)
+    }
+    
+    pub fn close_connection<S: Into<String>>(&self, addr: S) -> Result<(), CloseError> {
+        Ok(())
     }
 
     fn validate_for_send<T: Packet + 'static>(&self, for_all: bool) -> Result<(), SendError> {

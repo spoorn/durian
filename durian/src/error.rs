@@ -64,3 +64,10 @@ impl From<ConnectError> for ConnectionError {
         ConnectionError::new(format!("ConnectionError: {:?}", e))
     }
 }
+
+/// Error when calling [`PacketManager::close_connection()`](`crate::PacketManager::close_connection()`)
+#[derive(Debug, Clone, Display, ErrorOnlyMessage)]
+pub struct CloseError {
+    /// Error message
+    pub message: String,
+}
