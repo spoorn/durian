@@ -1,6 +1,7 @@
 #![allow(clippy::type_complexity)]
 
-use std::any::{type_name, Any, TypeId};
+use std::any::{Any, type_name, TypeId};
+use std::cmp::max;
 use std::error::Error;
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -14,13 +15,13 @@ use log::{debug, error, trace, warn};
 use quinn::{Connection, Endpoint, ReadError, RecvStream, SendStream, VarInt, WriteError};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::runtime::Runtime;
+use tokio::sync::{mpsc, RwLock};
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::Receiver;
-use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
 
-use crate::quinn_helpers::{make_client_endpoint, make_server_endpoint};
 use crate::{CloseError, ConnectionError, ErrorType, ReceiveError, SendError};
+use crate::quinn_helpers::{make_client_endpoint, make_server_endpoint};
 
 const FRAME_BOUNDARY: &[u8] = b"AAAAAA031320050421";
 
@@ -249,6 +250,11 @@ pub struct ServerConfig {
     /// number of clients connections.  If `wait_for_clients > total_expected_clients`, the server will still wait
     /// for `wait_for_clients` number of client connections.
     pub total_expected_clients: Option<u32>,
+    /// Set the max number of concurrent connection accepts to process at any given time.
+    /// 
+    /// A thread will be spawned for each, allowing `max_concurrent_accepts` connections to come in at the same time.
+    /// Default to `wait_for_clients + total_expected_clients(if set)`, else number of cores available.
+    pub max_concurrent_accepts: u32,
     /// Number of `receive` streams to accept from server to client.  Must be equal to number of receive packets
     /// registered through [`PacketManager::register_receive_packet()`]
     pub num_receive_streams: u32,
@@ -296,6 +302,7 @@ impl ServerConfig {
             addr: addr.into(),
             wait_for_clients,
             total_expected_clients,
+            max_concurrent_accepts: max(num_cpus::get() as u32, if let Some(expected) = total_expected_clients { expected } else { 0 } - wait_for_clients),
             num_receive_streams,
             num_send_streams,
             keep_alive_interval: None,
@@ -315,6 +322,7 @@ impl ServerConfig {
             addr: addr.into(),
             wait_for_clients,
             total_expected_clients: Some(wait_for_clients),
+            max_concurrent_accepts: num_cpus::get() as u32,
             num_receive_streams,
             num_send_streams,
             keep_alive_interval: None,
@@ -335,6 +343,7 @@ impl ServerConfig {
             addr: addr.into(),
             wait_for_clients,
             total_expected_clients: None,
+            max_concurrent_accepts: num_cpus::get() as u32,
             num_receive_streams,
             num_send_streams,
             keep_alive_interval: None,
@@ -360,9 +369,15 @@ impl ServerConfig {
         self.alpn_protocols = Some(protocols.iter().map(|&x| x.into()).collect());
         self
     }
+    
+    /// Set the max concurrent accept connections
+    pub fn with_max_concurrent_accepts(&mut self, max_concurrent_accepts: u32) -> &mut Self {
+        self.max_concurrent_accepts = max_concurrent_accepts;
+        self
+    }
 }
 
-// TODO: Check if streams or connections are closed during receive/send and clear out the connection
+// TODO: Allow closing Endpoint directly, along with its threads
 impl PacketManager {
     /// Create a new `PacketManager`
     ///
@@ -604,39 +619,22 @@ impl PacketManager {
         if server_config.total_expected_clients.is_none()
             || server_config.total_expected_clients.unwrap() > server_config.wait_for_clients
         {
-            let client_connections = client_connections.clone();
-            let arc_send_streams = new_send_streams.clone();
-            let arc_rx = new_rxs.clone();
-            let arc_runtime = Arc::clone(runtime);
             let mut client_id = server_config.wait_for_clients;
-            let accept_client_task = async move {
-                match server_config.total_expected_clients {
-                    None => loop {
-                        debug!("[server] Waiting for more clients...");
-                        let incoming_conn = endpoint.accept().await.unwrap();
-                        let conn = incoming_conn.await?;
-                        let addr = conn.remote_address();
-                        if client_connections.read().await.contains_key(&addr.to_string()) {
-                            panic!("[server] Client with addr={} was already connected", addr);
-                        }
-                        debug!("[server] connection accepted: addr={}", conn.remote_address());
-                        let (send_streams, recv_streams) = PacketManager::open_streams_for_connection(
-                            addr.to_string(),
-                            &conn,
-                            num_receive_streams,
-                            num_send_streams,
-                        )
-                        .await?;
-                        let res =
-                            PacketManager::spawn_receive_thread(&addr.to_string(), recv_streams, arc_runtime.as_ref())?;
-                        arc_rx.write().await.push((addr.to_string(), res));
-                        arc_send_streams.write().await.push((addr.to_string(), send_streams));
-                        client_connections.write().await.insert(addr.to_string(), (client_id, conn));
-                        client_id += 1;
-                    },
-                    Some(expected_num_clients) => {
-                        for i in 0..(expected_num_clients - server_config.wait_for_clients) {
-                            debug!("[server] Waiting for client #{}", i + server_config.wait_for_clients);
+
+            // TODO: save this value
+            for i in 0..server_config.max_concurrent_accepts {
+                debug!("Spinning up client connection accept thread #{}", i);
+
+                let client_connections = client_connections.clone();
+                let arc_send_streams = new_send_streams.clone();
+                let arc_rx = new_rxs.clone();
+                let arc_runtime = Arc::clone(runtime);
+                let endpoint = Arc::clone(&endpoint);
+
+                let accept_client_task = async move {
+                    match server_config.total_expected_clients {
+                        None => loop {
+                            debug!("[server] Waiting for more clients...");
                             let incoming_conn = endpoint.accept().await.unwrap();
                             let conn = incoming_conn.await?;
                             let addr = conn.remote_address();
@@ -650,27 +648,51 @@ impl PacketManager {
                                 num_receive_streams,
                                 num_send_streams,
                             )
-                            .await?;
-                            let res = PacketManager::spawn_receive_thread(
-                                &addr.to_string(),
-                                recv_streams,
-                                arc_runtime.as_ref(),
-                            )?;
+                                .await?;
+                            let res =
+                                PacketManager::spawn_receive_thread(&addr.to_string(), recv_streams, arc_runtime.as_ref())?;
                             arc_rx.write().await.push((addr.to_string(), res));
                             arc_send_streams.write().await.push((addr.to_string(), send_streams));
                             client_connections.write().await.insert(addr.to_string(), (client_id, conn));
                             client_id += 1;
+                        },
+                        Some(expected_num_clients) => {
+                            for i in 0..(expected_num_clients - server_config.wait_for_clients) {
+                                debug!("[server] Waiting for client #{}", i + server_config.wait_for_clients);
+                                let incoming_conn = endpoint.accept().await.unwrap();
+                                let conn = incoming_conn.await?;
+                                let addr = conn.remote_address();
+                                if client_connections.read().await.contains_key(&addr.to_string()) {
+                                    panic!("[server] Client with addr={} was already connected", addr);
+                                }
+                                debug!("[server] connection accepted: addr={}", conn.remote_address());
+                                let (send_streams, recv_streams) = PacketManager::open_streams_for_connection(
+                                    addr.to_string(),
+                                    &conn,
+                                    num_receive_streams,
+                                    num_send_streams,
+                                )
+                                    .await?;
+                                let res = PacketManager::spawn_receive_thread(
+                                    &addr.to_string(),
+                                    recv_streams,
+                                    arc_runtime.as_ref(),
+                                )?;
+                                arc_rx.write().await.push((addr.to_string(), res));
+                                arc_send_streams.write().await.push((addr.to_string(), send_streams));
+                                client_connections.write().await.insert(addr.to_string(), (client_id, conn));
+                                client_id += 1;
+                            }
                         }
                     }
-                }
-                Ok::<(), Box<ConnectionError>>(())
-            };
-
-            // TODO: save this value
-            let accept_client_thread = match runtime.as_ref() {
-                None => tokio::spawn(accept_client_task),
-                Some(runtime) => runtime.spawn(accept_client_task),
-            };
+                    Ok::<(), Box<ConnectionError>>(())
+                };
+                
+                let accept_client_thread = match runtime.as_ref() {
+                    None => tokio::spawn(accept_client_task),
+                    Some(runtime) => runtime.spawn(accept_client_task),
+                };
+            }
         }
 
         Ok(())
