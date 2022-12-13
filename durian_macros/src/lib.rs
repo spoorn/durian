@@ -335,7 +335,15 @@ pub fn error_only_message(tokens: TokenStream) -> TokenStream {
         impl #name {
             pub fn new<S: Into<String>>(message: S) -> Self {
                 #name {
-                    message: message.into()
+                    message: message.into(),
+                    error_type: durian::ErrorType::Unexpected
+                }
+            }
+            
+            pub fn new_with_type<S: Into<String>>(message: S, error_type: durian::ErrorType) -> Self {
+                #name {
+                    message: message.into(),
+                    error_type
                 }
             }
         }

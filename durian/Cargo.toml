@@ -35,5 +35,11 @@ log = "0.4.17"
 durian_macros = { path = "../durian_macros" }
 indexmap = "1.9.2"
 
+[dev-dependencies]
+test-log = "0.2.11"
+env_logger = "*"
+tracing = {version = "0.1", default-features = false}
+tracing-subscriber = {version = "0.3", default-features = false, features = ["env-filter", "fmt"]}
+
 [features]
 default = []

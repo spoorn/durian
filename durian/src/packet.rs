@@ -10,8 +10,8 @@ use bimap::BiMap;
 use bytes::Bytes;
 use hashbrown::HashMap;
 use indexmap::IndexMap;
-use log::{debug, error, trace};
-use quinn::{Connection, Endpoint, RecvStream, SendStream};
+use log::{debug, error, trace, warn};
+use quinn::{Connection, Endpoint, ReadError, RecvStream, SendStream, VarInt, WriteError};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, RwLock};
@@ -19,7 +19,7 @@ use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::Receiver;
 use tokio::task::JoinHandle;
 
-use crate::{CloseError, ConnectionError, ReceiveError, SendError};
+use crate::{CloseError, ConnectionError, ErrorType, ReceiveError, SendError};
 use crate::quinn_helpers::{make_client_endpoint, make_server_endpoint};
 
 const FRAME_BOUNDARY: &[u8] = b"AAAAAA031320050421";
@@ -362,7 +362,7 @@ impl ServerConfig {
     }
 }
 
-// TODO: Add a close_connection(addr)
+// TODO: Check if streams or connections are closed during receive/send and clear out the connection
 impl PacketManager {
     /// Create a new `PacketManager`
     ///
@@ -755,24 +755,34 @@ impl PacketManager {
         runtime: &Option<Runtime>,
     ) -> Result<HashMap<u32, (RwLock<Receiver<Bytes>>, JoinHandle<()>)>, Box<dyn Error>> {
         let mut rxs = HashMap::new();
-        trace!(
-            "Spawning receive thread for addr={} for {} ids",
-            addr.into(),
-            recv_streams.len()
-        );
+        let addr = addr.into();
+        trace!("Spawning receive thread for addr={} for {} ids", addr, recv_streams.len());
         for (id, mut recv_stream) in recv_streams.into_iter() {
             let (tx, rx) = mpsc::channel(100);
 
+            let addr_clone = addr.clone();
             let task = async move {
                 let mut partial_chunk: Option<Bytes> = None;
                 loop {
                     // TODO: relay error message
                     // TODO: configurable size limit
-                    let chunk = recv_stream.read_chunk(usize::MAX, true).await.unwrap();
-                    match chunk {
+                    let chunk = recv_stream.read_chunk(usize::MAX, true).await;
+                    if let Err(e) = &chunk {
+                        match e {
+                            ReadError::Reset(_) => {}
+                            ReadError::ConnectionLost(_) => {
+                                warn!("Receive stream for addr={}, packet id={} errored.  This may mean the connection was closed prematurely: {:?}", addr_clone, id, e);
+                                break;
+                            }
+                            ReadError::UnknownStream => {}
+                            ReadError::IllegalOrderedRead => {}
+                            ReadError::ZeroRttRejected => {}
+                        }
+                    }
+                    match chunk.unwrap() {
                         None => {
                             // TODO: Error
-                            trace!("Receive stream closed, got None when reading chunks");
+                            debug!("Receive stream for addr={}, packet id={} is finished, got None when reading chunks", addr_clone, id);
                             break;
                         }
                         Some(chunk) => {
@@ -913,7 +923,8 @@ impl PacketManager {
 
     /// Fetches all received packets from all destination addresses
     ///
-    /// This reads from all `receive` channels and deserializes the [`Packets`](`Packet`) requested.
+    /// This reads from all `receive` channels and deserializes the [`Packets`](`Packet`) requested.  Any channel that
+    /// is found disconnected will be removed from the stream queue and a warning will be logged.
     ///
     /// # Type Arguments
     /// * `T: Packet + 'static` - The [`Packet`] type to request
@@ -930,7 +941,10 @@ impl PacketManager {
     /// A [`Result`] containing a [`Vec`] of pair tuples with the first element being the destination socket address,
     /// and the second element will have a `None` if `blocking` was set to `false` and the associated destination address
     /// did not send the Packet type when this call queried for it, or [`Some`] containing a [`Vec`] of the Packets
-    /// type `T` that was requested from the associated destination address.
+    /// type `T` that was requested from the associated destination address.  
+    /// 
+    /// [`ReceiveError`] if there was an error fetching received packets.  If a channel was found disconnected, no
+    /// Error will be returned with it, but instead it will be removed from the stream queue and output.
     ///
     /// # Panics
     /// If the `PacketManager` was created via [`new_for_async()`](`PacketManager::new_for_async()`)
@@ -944,22 +958,52 @@ impl PacketManager {
             None => {
                 panic!("PacketManager does not have a runtime instance associated with it.  Did you mean to call async_received()?");
             }
-            Some(runtime) => runtime.block_on(async {
-                let mut res = vec![];
-                for (addr, rxs) in self.rx.iter() {
-                    res.push((
-                        addr.clone(),
-                        PacketManager::async_received_helper::<T, U>(
+            Some(runtime) => {
+                let res = runtime.block_on(async {
+                    let mut res = vec![];
+                    let mut err: Option<ReceiveError> = None;
+                    // If we find any streams are closed, save them to cleanup and close the connections after iterating
+                    let mut addr_to_close = Vec::new();
+                    for (addr, rxs) in self.rx.iter() {
+                        let received = PacketManager::async_received_helper::<T, U>(
                             blocking,
                             addr,
                             &self.receive_packets,
                             &self.recv_packet_builders,
                             rxs,
-                        ).await?,
-                    ));
-                }
-                Ok(res)
-            }),
+                        ).await;
+
+                        match received {
+                            Ok(received) => {
+                                res.push((addr.clone(), received));
+                            },
+                            Err(e) => {
+                                match e.error_type {
+                                    ErrorType::Unexpected => {
+                                        err = Some(e);
+                                        break;
+                                    }
+                                    ErrorType::Disconnected => {
+                                        addr_to_close.push(addr.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    if let Some(e) = err {
+                        return (addr_to_close, Err(e));
+                    }
+                    (addr_to_close, Ok(res))
+                });
+
+                for addr in res.0.iter() {
+                    warn!("Receive stream for addr={} disconnected.  Removing it from the receive queue and continuing as normal.", addr);
+                    self.close_connection(addr).expect(format!("Could not close connection for addr={}", addr).as_str());
+                } 
+                
+                res.1
+            },
         }
     }
 
@@ -980,17 +1024,43 @@ impl PacketManager {
         self.async_validate_for_received::<T>(true).await?;
         self.async_update_new_receivers().await;
         let mut res = vec![];
+        let mut err: Option<ReceiveError> = None;
+        // If we find any streams are closed, save them to cleanup and close the connections after iterating
+        let mut addr_to_close = Vec::new();
         for (addr, rxs) in self.rx.iter() {
-            res.push((
-                addr.clone(),
-                PacketManager::async_received_helper::<T, U>(
-                    blocking,
-                    addr,
-                    &self.receive_packets,
-                    &self.recv_packet_builders,
-                    rxs,
-                ).await?,
-            ));
+            let received = PacketManager::async_received_helper::<T, U>(
+                blocking,
+                addr,
+                &self.receive_packets,
+                &self.recv_packet_builders,
+                rxs,
+            ).await;
+            
+            match received {
+                Ok(received) => {
+                    res.push((addr.clone(), received));
+                },
+                Err(e) => {
+                    match e.error_type {
+                        ErrorType::Unexpected => {
+                            err = Some(e);
+                            break;
+                        }
+                        ErrorType::Disconnected => {
+                            addr_to_close.push(addr.clone());
+                        }
+                    }
+                }
+            }
+        }
+        
+        for addr in addr_to_close.iter() {
+            warn!("Receive stream for addr={} disconnected.  Removing it from the receive queue and continuing as normal.", addr);
+            self.async_close_connection(addr).await.expect(format!("Could not close connection for addr={}", addr).as_str());
+        }
+        
+        if let Some(e) = err {
+            return Err(e);
         }
         Ok(res)
     }
@@ -1014,6 +1084,8 @@ impl PacketManager {
     /// # Returns
     /// A [`Result`] containing [`None`] if the destination address did not send any Packets of this type, else [`Some`]
     /// containing a [`Vec`] of those received packets.
+    /// 
+    /// [`ReceiveError`] if error occurred fetching received packets.
     ///
     /// # Panics
     /// If the [`PacketManager`] was created via [`new_for_async()`](`PacketManager::new_for_async()`)
@@ -1064,11 +1136,11 @@ impl PacketManager {
             &self.receive_packets,
             &self.recv_packet_builders,
             rxs.1,
-        )
-            .await
+        ).await
     }
 
     // Assumes does not have more than one client to send to, should be checked by callers
+    // TODO: Handle connections dropped, if joinhandle failed, close the connection and return error, etc.
     async fn async_received_helper<T: Packet + 'static, U: PacketBuilder<T> + 'static>(
         blocking: bool,
         addr: &String,
@@ -1087,10 +1159,10 @@ impl PacketManager {
         if blocking {
             match rx.recv().await {
                 None => {
-                    return Err(ReceiveError::new(format!(
-                        "Channel for packet type {} closed unexpectedly!",
+                    return Err(ReceiveError::new_with_type(format!(
+                        "Receiver channel for packet type {} was disconnected",
                         type_name::<T>()
-                    )));
+                    ), ErrorType::Disconnected));
                 }
                 Some(bytes) => {
                     PacketManager::receive_bytes::<T, U>(bytes, packet_builder, &mut res)?;
@@ -1109,10 +1181,10 @@ impl PacketManager {
                         break;
                     }
                     TryRecvError::Disconnected => {
-                        return Err(ReceiveError::new(format!(
-                            "Receiver channel for type {} was disconnected",
+                        return Err(ReceiveError::new_with_type(format!(
+                            "Receiver channel for packet type {} was disconnected",
                             type_name::<T>()
-                        )));
+                        ), ErrorType::Disconnected));
                     }
                 },
             }
@@ -1189,12 +1261,16 @@ impl PacketManager {
     }
 
     /// Broadcast a Packet to all destination addresses
+    /// 
+    /// If any `send` channels are disconnected, they will be removed from the send stream queue and a warning will be
+    /// logged, and no error will be indicated from this function.
     ///
     /// # Arguments
     /// * `packet` - The [`Packet`] to broadcast
     ///
     /// # Returns
-    /// A [`Result`] containing `()` if Packet was sent, else [`SendError`]
+    /// A [`Result`] containing `()` if Packet was sent, else [`SendError`].  If a channel was disconnected, it will be
+    /// removed from the send stream queue and __no__ error will be returned.
     ///
     /// # Panics
     /// If the [`PacketManager`] was created via [`new_for_async()`](`PacketManager::new_for_async()`)
@@ -1205,12 +1281,41 @@ impl PacketManager {
             None => {
                 panic!("PacketManager does not have a runtime instance associated with it.  Did you mean to call async_broadcast()?");
             }
-            Some(runtime) => runtime.block_on(async {
-                for (addr, send_streams) in self.send_streams.iter() {
-                    PacketManager::async_send_helper::<T>(&packet, addr, &self.send_packets, send_streams).await?;
+            Some(runtime) => {
+                let res = runtime.block_on(async {
+                    let mut err: Option<SendError> = None;
+                    // If we find any streams are closed, save them to cleanup and close the connections after iterating
+                    let mut addr_to_close = Vec::new();
+                    for (addr, send_streams) in self.send_streams.iter() {
+                        let sent = PacketManager::async_send_helper::<T>(&packet, addr, &self.send_packets, send_streams).await;
+
+                        if let Err(e) = sent {
+                            match e.error_type {
+                                ErrorType::Unexpected => {
+                                    err = Some(e);
+                                    break;
+                                }
+                                ErrorType::Disconnected => {
+                                    addr_to_close.push(addr.clone());
+                                }
+                            }
+                        }
+                    }
+
+                    if let Some(e) = err {
+                        return (addr_to_close, Err(e));
+                    }
+
+                    (addr_to_close, Ok(()))
+                });
+                
+                for addr in res.0.iter() {
+                    warn!("Send stream for addr={} disconnected.  Removing it from the send queue and continuing as normal.", addr);
+                    self.close_connection(addr).expect(format!("Could not close connection for addr={}", addr).as_str());
                 }
-                Ok(())
-            }),
+                
+                res.1
+            },
         }
     }
 
@@ -1227,9 +1332,34 @@ impl PacketManager {
         }
         self.async_validate_for_send::<T>(true).await?;
         self.async_update_new_senders().await;
+        let mut err: Option<SendError> = None;
+        // If we find any streams are closed, save them to cleanup and close the connections after iterating
+        let mut addr_to_close = Vec::new();
         for (addr, send_streams) in self.send_streams.iter() {
-            PacketManager::async_send_helper::<T>(&packet, addr, &self.send_packets, send_streams).await?;
+            let sent = PacketManager::async_send_helper::<T>(&packet, addr, &self.send_packets, send_streams).await;
+
+            if let Err(e) = sent {
+                match e.error_type {
+                    ErrorType::Unexpected => {
+                        err = Some(e);
+                        break;
+                    }
+                    ErrorType::Disconnected => {
+                        addr_to_close.push(addr.clone());
+                    }
+                }
+            }
         }
+
+        for addr in addr_to_close.iter() {
+            warn!("Send stream for addr={} disconnected.  Removing it from the send queue and continuing as normal.", addr);
+            self.async_close_connection(addr).await.expect(format!("Could not close connection for addr={}", addr).as_str());
+        }
+
+        if let Some(e) = err {
+            return Err(e);
+        }
+        
         Ok(())
     }
 
@@ -1282,7 +1412,8 @@ impl PacketManager {
     /// * `packet` - The [`Packet`] to broadcast
     ///
     /// # Returns
-    /// A [`Result`] containing `()` if Packet was sent, else [`SendError`]
+    /// A [`Result`] containing `()` if Packet was sent, else [`SendError`].  In contrast to [`broadcast()`](`PacketManager::broadcast()`),
+    /// if the `send` channel is disconnected, this will return a [`SendError`] with `error_type == [`ErrorType::Disconnect`]`
     ///
     /// # Panics
     /// If the [`PacketManager`] was created via [`new_for_async()`](`PacketManager::new_for_async()`)
@@ -1295,12 +1426,29 @@ impl PacketManager {
             }
             Some(runtime) => {
                 let addr = addr.into();
-                match self.send_streams.get(&addr) {
+                let res = match self.send_streams.get(&addr) {
                     None => {
-                        return Err(SendError::new(format!("Could not find Send stream for address {}", addr)));
+                        Err(SendError::new(format!("Could not find Send stream for address {}", addr)))
                     }
                     Some(send_streams) => {
                         runtime.block_on(PacketManager::async_send_helper::<T>(&packet, &addr, &self.send_packets, send_streams))                    
+                    }
+                };
+
+                match res {
+                    Ok(_) => { Ok(()) }
+                    Err(e) => {
+                        match e.error_type {
+                            ErrorType::Unexpected => {
+                                Err(e)
+                            }
+                            ErrorType::Disconnected => {
+                                let addr_clone = addr.clone();
+                                warn!("Send stream for addr={} disconnected.  Removing it from the send queue and returning error.", addr);
+                                self.close_connection(addr).expect(format!("Could not close connection for addr={}", addr_clone).as_str());
+                                Err(e)
+                            }
+                        }
                     }
                 }
             }
@@ -1324,12 +1472,29 @@ impl PacketManager {
         self.async_validate_for_send::<T>(true).await?;
         self.async_update_new_senders().await;
         let addr = addr.into();
-        match self.send_streams.get(&addr) {
+        let res = match self.send_streams.get(&addr) {
             None => {
-                return Err(SendError::new(format!("Could not find Send stream for address {}", addr)));
+                Err(SendError::new(format!("Could not find Send stream for address {}", addr)))
             }
             Some(send_streams) => {
                 PacketManager::async_send_helper::<T>(&packet, &addr, &self.send_packets, send_streams).await
+            }
+        };
+        
+        match res {
+            Ok(_) => { Ok(()) }
+            Err(e) => {
+                match e.error_type {
+                    ErrorType::Unexpected => {
+                        Err(e)
+                    }
+                    ErrorType::Disconnected => {
+                        let addr_clone = addr.clone();
+                        warn!("Send stream for addr={} disconnected.  Removing it from the send queue and returning error.", addr);
+                        self.async_close_connection(addr).await.expect(format!("Could not close connection for addr={}", addr_clone).as_str());
+                        Err(e)
+                    }
+                }
             }
         }
     }
@@ -1360,6 +1525,7 @@ impl PacketManager {
         }
     }
 
+    // TODO: handle connection dropped
     async fn async_send_helper<T: Packet + 'static>(
         packet: &T,
         addr: &String,
@@ -1372,7 +1538,16 @@ impl PacketManager {
         let mut send_stream = send_streams.get(id).unwrap().write().await;
         debug!("Sending bytes to {} with len {}", addr, bytes.len());
         trace!("Sending bytes {:?}", bytes);
-        send_stream.write_chunk(bytes).await.unwrap();
+        if let Err(e) = send_stream.write_chunk(bytes).await {
+            match e {
+                WriteError::Stopped(_) => {}
+                WriteError::ConnectionLost(e) => {
+                    return Err(SendError::new_with_type(format!("Send stream for addr={}, packet id={} is disconnected: {:?}", addr, id, e), ErrorType::Disconnected));
+                }
+                WriteError::UnknownStream => {}
+                WriteError::ZeroRttRejected => {}
+            }
+        }
         trace!("Sending FRAME_BOUNDARY");
         send_stream.write_all(FRAME_BOUNDARY).await.unwrap();
         debug!("Sent packet to {} with id={}, type={}", addr, id, type_name::<T>());
@@ -1422,8 +1597,53 @@ impl PacketManager {
         Some(client_connections.get(&addr).unwrap().0)
     }
     
-    pub fn close_connection<S: Into<String>>(&self, addr: S) -> Result<(), CloseError> {
-        
+    /// Close the connection with a destination Socket address
+    /// 
+    /// __Warning: this will forcefully close the connection, causing any Packets in stream queues that haven't already
+    /// sent over the wire to be dropped.__
+    /// 
+    /// Cleans up resources associated with the connection internal to [`PacketManager`].  A Packet will be sent to the
+    /// destination address detailing the reason of connection closure.
+    /// 
+    /// # Returns
+    /// A [`Result`] containing `()` on success, [`CloseError`] if error occurred while closing the connection.  Note:
+    /// connection resources may be partially closed.
+    pub fn close_connection<S: Into<String>>(&mut self, addr: S) -> Result<(), CloseError> {
+        // Update senders and receivers before checking what to remove
+        self.update_new_senders();
+        self.update_new_receivers();
+        let addr = addr.into();
+        let mut client_connections = self.client_connections.blocking_write();
+        if let Some((id, conn)) = client_connections.get(&addr) {
+            debug!("Forcefully closing connection for client addr={}, id={}", addr, id);
+            conn.close(VarInt::from(1 as u8), "PacketManager::close_connection() called for this connection".as_bytes());
+        }
+        client_connections.remove(&addr);
+        self.send_streams.remove(&addr);
+        self.rx.remove(&addr);
+        Ok(())
+    }
+
+    /// Close the connection with a destination Socket address
+    /// 
+    /// __Warning: this will forcefully close the connection, causing any Packets in stream queues that haven't already
+    /// sent over the wire to be dropped.__
+    /// 
+    /// Same as [`close_connection()`](`PacketManager::close_connection()`), except returns a Future and can be called
+    /// from an async context.
+    pub async fn async_close_connection<S: Into<String>>(&mut self, addr: S) -> Result<(), CloseError> {
+        // Update senders and receivers before checking what to remove
+        self.async_update_new_senders().await;
+        self.async_update_new_receivers().await;
+        let addr = addr.into();
+        let mut client_connections = self.client_connections.write().await;
+        if let Some((id, conn)) = client_connections.get(&addr) {
+            debug!("Forcefully closing connection for client addr={}, id={}", addr, id);
+            conn.close(VarInt::from(1 as u8), "PacketManager::close_connection() called for this connection".as_bytes());
+        }
+        client_connections.remove(&addr);
+        self.send_streams.remove(&addr);
+        self.rx.remove(&addr);
         Ok(())
     }
 
@@ -1498,7 +1718,7 @@ mod tests {
     use durian_macros::bincode_packet;
 
     use crate as durian;
-    use crate::{ClientConfig, ServerConfig};
+    use crate::{ClientConfig, ErrorType, ServerConfig};
 
     #[bincode_packet]
     #[derive(Debug, PartialEq, Eq)]
@@ -1641,7 +1861,9 @@ mod tests {
         assert!(server.await.is_ok());
     }
 
-    #[tokio::test]
+    // Run with 
+    // $env:RUST_LOG="debug"; cargo test receive_packet_e2e_async_broadcast -- --nocapture
+    #[test_log::test(tokio::test)]
     async fn receive_packet_e2e_async_broadcast() {
         let mut manager = PacketManager::new_for_async();
 
@@ -1650,8 +1872,9 @@ mod tests {
         let client_addr = "127.0.0.1:6001";
         let client2_addr = "127.0.0.1:6002";
 
-        let num_receive = 8;
-        let num_send = 8;
+        let num_receive = 100;
+        let client2_max_receive = 40;
+        let num_send = 100;
 
         // Server
         let server = tokio::spawn(async move {
@@ -1665,12 +1888,14 @@ mod tests {
 
             let mut sent_packets = 0;
             let mut recv_packets = 0;
+            let mut client2_recv_packets = 0;
             let mut all_test_packets = Vec::new();
             let mut all_other_packets = Vec::new();
+            let mut closed_client2 = false;
             loop {
-                println!("server sent {}, received {}", sent_packets, recv_packets);
-                println!("all_test_packets len {}", all_test_packets.len());
-                println!("all_other_packets len {}", all_other_packets.len());
+                //println!("server sent {}, received {}", sent_packets, recv_packets);
+                //println!("all_test_packets len {}", all_test_packets.len());
+                //println!("all_other_packets len {}", all_other_packets.len());
                 if sent_packets < num_send {
                     assert!(m.async_broadcast::<Test>(Test { id: 5 }).await.is_ok());
                     assert!(m.async_broadcast::<Test>(Test { id: 8 }).await.is_ok());
@@ -1690,56 +1915,73 @@ mod tests {
                         .is_ok());
                     sent_packets += 4;
                 }
+                
+                // When halfway, try disconnecting one of the clients
+                if client2_recv_packets >= client2_max_receive && !closed_client2 {
+                    m.async_close_connection(client2_addr).await.unwrap();
+                    closed_client2 = true;
+                }
 
-                if recv_packets == num_receive * 2 {
+                if recv_packets >= num_receive + client2_max_receive && sent_packets >= num_send {
                     println!("server done, sent {}, received {}", sent_packets, recv_packets);
                     break;
                 }
 
-                let test_res = m.async_received_all::<Test, TestPacketBuilder>(false).await;
+                let test_res = m.async_received_all::<Test, TestPacketBuilder>(true).await;
+                println!("{:?}", test_res);
                 assert!(test_res.is_ok());
                 let mut received_all = test_res.unwrap();
-                assert_eq!(received_all.len(), 2);
+                assert_eq!(received_all.len(), if closed_client2 { 1 } else { 2 });
                 let (addr, unwrapped) = received_all.remove(0);
-                let (addr2, unwrapped2) = received_all.remove(0);
-                assert!((addr == client_addr || addr == client2_addr) && (addr != addr2));
-                assert!(m.async_get_client_id(addr).await.is_some());
-                assert!(m.async_get_client_id(addr2).await.is_some());
+                assert!(m.async_get_client_id(addr.clone()).await.is_some());
                 if unwrapped.is_some() {
                     let mut packets = unwrapped.unwrap();
                     recv_packets += packets.len();
+                    client2_recv_packets += packets.len()/2;
                     all_test_packets.append(&mut packets);
                 }
-                if unwrapped2.is_some() {
-                    let mut packets = unwrapped2.unwrap();
-                    recv_packets += packets.len();
-                    all_test_packets.append(&mut packets);
+                
+                if !closed_client2 {
+                    let (addr2, unwrapped2) = received_all.remove(0);
+                    assert!((addr == client_addr || addr == client2_addr) && (addr != addr2));
+                    assert!(m.async_get_client_id(addr2).await.is_some());
+                    if unwrapped2.is_some() {
+                        let mut packets = unwrapped2.unwrap();
+                        recv_packets += packets.len();
+                        client2_recv_packets += packets.len()/2;
+                        all_test_packets.append(&mut packets);
+                    }
                 }
 
-                let other_res = m.async_received_all::<Other, OtherPacketBuilder>(false).await;
+                let other_res = m.async_received_all::<Other, OtherPacketBuilder>(true).await;
                 assert!(other_res.is_ok());
                 let mut received_all = other_res.unwrap();
-                assert_eq!(received_all.len(), 2);
+                assert_eq!(received_all.len(), if closed_client2 { 1 } else { 2 });
                 let (addr, unwrapped) = received_all.remove(0);
-                let (addr2, unwrapped2) = received_all.remove(0);
-                assert!((addr == client_addr || addr == client2_addr) && (addr != addr2));
-                assert!(m.async_get_client_id(addr).await.is_some());
-                assert!(m.async_get_client_id(addr2).await.is_some());
+                assert!(m.async_get_client_id(addr.clone()).await.is_some());
                 if unwrapped.is_some() {
                     let mut packets = unwrapped.unwrap();
                     recv_packets += packets.len();
+                    client2_recv_packets += packets.len()/2;
                     all_other_packets.append(&mut packets);
                 }
-                if unwrapped2.is_some() {
-                    assert!(unwrapped2.is_some());
-                    let mut packets = unwrapped2.unwrap();
-                    recv_packets += packets.len();
-                    all_other_packets.append(&mut packets);
+                
+                if !closed_client2 {
+                    let (addr2, unwrapped2) = received_all.remove(0);
+                    assert!((addr == client_addr || addr == client2_addr) && (addr != addr2));
+                    assert!(m.async_get_client_id(addr2).await.is_some());
+                    if unwrapped2.is_some() {
+                        assert!(unwrapped2.is_some());
+                        let mut packets = unwrapped2.unwrap();
+                        recv_packets += packets.len();
+                        client2_recv_packets += packets.len()/2;
+                        all_other_packets.append(&mut packets);
+                    }
                 }
             }
 
-            assert_eq!(all_test_packets.len(), num_receive);
-            assert_eq!(all_other_packets.len(), num_receive);
+            assert_eq!(all_test_packets.len(), (num_receive + client2_max_receive) / 2);
+            assert_eq!(all_other_packets.len(), (num_receive + client2_max_receive) / 2);
             for (i, packet) in all_test_packets.into_iter().enumerate() {
                 if i % 2 == 0 {
                     assert_eq!(packet, Test { id: 6 });
@@ -1812,7 +2054,7 @@ mod tests {
                     sent_packets += 4;
                 }
 
-                if recv_packets == num_receive {
+                if recv_packets == client2_max_receive {
                     println!("client2 done, sent {}, received {}", sent_packets, recv_packets);
                     sleep(Duration::from_secs(4)).await;
                     break;
@@ -1821,6 +2063,10 @@ mod tests {
                 let test_res = manager.async_received_all::<Test, TestPacketBuilder>(true).await;
                 assert!(test_res.is_ok());
                 let mut received_all = test_res.unwrap();
+                if received_all.is_empty() {
+                    println!("client2 got empty packets.  Exiting loop");
+                    break;
+                }
                 assert!(!received_all.is_empty());
                 let (addr, unwrapped) = received_all.remove(0);
                 assert_eq!(addr, server_addr);
@@ -1837,8 +2083,8 @@ mod tests {
                 all_other_packets.append(&mut packets);
             }
 
-            assert_eq!(all_test_packets.len(), num_receive / 2);
-            assert_eq!(all_other_packets.len(), num_receive / 2);
+            assert_eq!(all_test_packets.len(), client2_max_receive / 2);
+            assert_eq!(all_other_packets.len(), client2_max_receive / 2);
             for (i, packet) in all_test_packets.into_iter().enumerate() {
                 if i % 2 == 0 {
                     assert_eq!(packet, Test { id: 5 });
@@ -1980,8 +2226,9 @@ mod tests {
         let client_addr = "127.0.0.1:7001";
         let client2_addr = "127.0.0.1:7002";
 
-        let num_receive = 8;
-        let num_send = 8;
+        let num_receive = 100;
+        let client2_max_receive = 40;
+        let num_send = 100;
 
         // Server
         let server = tokio::spawn(async move {
@@ -1997,6 +2244,7 @@ mod tests {
             let mut recv_packets = 0;
             let mut all_test_packets = Vec::new();
             let mut all_other_packets = Vec::new();
+            let mut client2_closed = false;
             loop {
                 println!("server sent {}, received {}", sent_packets, recv_packets);
                 println!("all_test_packets len {}", all_test_packets.len());
@@ -2024,78 +2272,107 @@ mod tests {
                         )
                         .await
                         .is_ok());
-                    assert!(m.async_send_to::<Test>(client2_addr.to_string(), Test { id: 5 }).await.is_ok());
-                    assert!(m.async_send_to::<Test>(client2_addr.to_string(), Test { id: 8 }).await.is_ok());
-                    assert!(m
-                        .async_send_to::<Other>(
-                            client2_addr.to_string(),
-                            Other {
-                                name: "spoorn".to_string(),
-                                id: 4,
-                            },
+                    if !client2_closed {
+                        if let Err(e) = m.async_send_to::<Test>(client2_addr.to_string(), Test { id: 5 }).await {
+                            match e.error_type {
+                                ErrorType::Unexpected => { panic!("Couldn't send Test to client 2 {:?}", e); }
+                                ErrorType::Disconnected => {  }
+                            }
+                        }
+                        if let Err(e) = m.async_send_to::<Test>(client2_addr.to_string(), Test { id: 8 }).await {
+                            match e.error_type {
+                                ErrorType::Unexpected => { panic!("Couldn't send Test to client 2 {:?}", e); }
+                                ErrorType::Disconnected => {  }
+                            }
+                        }
+                        if let Err(e) = m.async_send_to::<Other>(client2_addr.to_string(), Other {
+                            name: "spoorn".to_string(),
+                            id: 4,
+                        },
                         )
-                        .await
-                        .is_ok());
-                    assert!(m
-                        .async_send_to::<Other>(
-                            client2_addr.to_string(),
-                            Other {
-                                name: "kiko".to_string(),
-                                id: 6,
-                            },
-                        )
-                        .await
-                        .is_ok());
+                            .await {
+                            match e.error_type {
+                                ErrorType::Unexpected => { panic!("Couldn't send Test to client 2 {:?}", e); }
+                                ErrorType::Disconnected => {  }
+                            }
+                        }
+                        if let Err(e) = m
+                            .async_send_to::<Other>(
+                                client2_addr.to_string(),
+                                Other {
+                                    name: "kiko".to_string(),
+                                    id: 6,
+                                },
+                            )
+                            .await {
+                            match e.error_type {
+                                ErrorType::Unexpected => { panic!("Couldn't send Test to client 2 {:?}", e); }
+                                ErrorType::Disconnected => {  }
+                            }
+                        }
+                    }
                     sent_packets += 4; // to each client
                 }
 
-                if recv_packets == num_receive * 2 {
+                if recv_packets >= num_receive + client2_max_receive {
                     println!("server done, sent {}, received {}", sent_packets, recv_packets);
                     break;
                 }
 
-                let test_res = m.async_received_all::<Test, TestPacketBuilder>(false).await;
+                let test_res = m.async_received_all::<Test, TestPacketBuilder>(true).await;
+                println!("{:?}", test_res);
                 assert!(test_res.is_ok());
                 let mut received_all = test_res.unwrap();
-                assert_eq!(received_all.len(), 2);
+                if received_all.len() == 1 {
+                    client2_closed = true;
+                }
+                assert_eq!(received_all.len(), if client2_closed { 1 } else { 2 });
                 let (addr, unwrapped) = received_all.remove(0);
-                let (addr2, unwrapped2) = received_all.remove(0);
-                assert!((addr == client_addr || addr == client2_addr) && (addr != addr2));
-                assert!(m.async_get_client_id(addr).await.is_some());
-                assert!(m.async_get_client_id(addr2).await.is_some());
+                assert!(m.async_get_client_id(addr.clone()).await.is_some());
                 if unwrapped.is_some() {
                     let mut packets = unwrapped.unwrap();
                     recv_packets += packets.len();
                     all_test_packets.append(&mut packets);
                 }
-                if unwrapped2.is_some() {
-                    let mut packets = unwrapped2.unwrap();
-                    recv_packets += packets.len();
-                    all_test_packets.append(&mut packets);
+                if !client2_closed {
+                    let (addr2, unwrapped2) = received_all.remove(0);
+                    assert!((addr == client_addr || addr == client2_addr) && (addr != addr2));
+                    assert!(m.async_get_client_id(addr2.clone()).await.is_some());
+                    if unwrapped2.is_some() {
+                        let mut packets = unwrapped2.unwrap();
+                        recv_packets += packets.len();
+                        all_test_packets.append(&mut packets);
+                    }
                 }
 
-                let other_res = m.async_received_all::<Other, OtherPacketBuilder>(false).await;
+                let other_res = m.async_received_all::<Other, OtherPacketBuilder>(true).await;
                 assert!(other_res.is_ok());
                 let mut received_all = other_res.unwrap();
-                assert_eq!(received_all.len(), 2);
+                if received_all.len() == 1 {
+                    client2_closed = true;
+                }
+                assert_eq!(received_all.len(), if client2_closed { 1 } else { 2 });
                 let (addr, unwrapped) = received_all.remove(0);
-                let (addr2, unwrapped2) = received_all.remove(0);
-                assert!((addr == client_addr || addr == client2_addr) && (addr != addr2));
                 if unwrapped.is_some() {
                     let mut packets = unwrapped.unwrap();
                     recv_packets += packets.len();
                     all_other_packets.append(&mut packets);
                 }
-                if unwrapped2.is_some() {
-                    assert!(unwrapped2.is_some());
-                    let mut packets = unwrapped2.unwrap();
-                    recv_packets += packets.len();
-                    all_other_packets.append(&mut packets);
+                
+                if !client2_closed {
+                    let (addr2, unwrapped2) = received_all.remove(0);
+                    assert!((addr == client_addr || addr == client2_addr) && (addr != addr2));
+                    if unwrapped2.is_some() {
+                        assert!(unwrapped2.is_some());
+                        let mut packets = unwrapped2.unwrap();
+                        recv_packets += packets.len();
+                        all_other_packets.append(&mut packets);
+                    }
                 }
             }
 
-            assert_eq!(all_test_packets.len(), num_receive);
-            assert_eq!(all_other_packets.len(), num_receive);
+            assert_eq!(all_test_packets.len(), (num_receive + client2_max_receive) / 2);
+            assert_eq!(all_other_packets.len(), (num_receive + client2_max_receive) / 2);
             for (i, packet) in all_test_packets.into_iter().enumerate() {
                 if i % 2 == 0 {
                     assert_eq!(packet, Test { id: 6 });
@@ -2148,7 +2425,7 @@ mod tests {
             let mut all_other_packets = Vec::new();
             loop {
                 println!("client2 sent {}, received {}", sent_packets, recv_packets);
-                if sent_packets < num_send {
+                if sent_packets < client2_max_receive {
                     // Either send or send_to should work since there is only one recipient
                     assert!(manager.async_send::<Test>(Test { id: 6 }).await.is_ok());
                     assert!(manager.async_send_to::<Test>(server_addr.to_string(), Test { id: 9 }).await.is_ok());
@@ -2171,7 +2448,15 @@ mod tests {
                         .is_ok());
                     sent_packets += 4;
                 }
+                
+                // Close connection early for testing
+                if recv_packets >= client2_max_receive {
+                    manager.async_close_connection(server_addr).await.unwrap();
+                    println!("client2 closed connection");
+                    break;
+                }
 
+                // Fallback to exit loop, but should error
                 if recv_packets == num_receive {
                     println!("client2 done, sent {}, received {}", sent_packets, recv_packets);
                     sleep(Duration::from_secs(4)).await;
@@ -2197,8 +2482,8 @@ mod tests {
                 all_other_packets.append(&mut packets);
             }
 
-            assert_eq!(all_test_packets.len(), num_receive / 2);
-            assert_eq!(all_other_packets.len(), num_receive / 2);
+            assert_eq!(all_test_packets.len(), client2_max_receive / 2);
+            assert_eq!(all_other_packets.len(), client2_max_receive / 2);
             for (i, packet) in all_test_packets.into_iter().enumerate() {
                 if i % 2 == 0 {
                     assert_eq!(packet, Test { id: 5 });
