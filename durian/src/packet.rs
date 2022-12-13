@@ -991,7 +991,7 @@ impl PacketManager {
                 for addr in res.0.iter() {
                     warn!("Receive stream for addr={} disconnected.  Removing it from the receive queue and continuing as normal.", addr);
                     self.close_connection(addr)
-                        .expect(format!("Could not close connection for addr={}", addr).as_str());
+                        .unwrap_or_else(|_| panic!("Could not close connection for addr={}", addr));
                 }
 
                 res.1
@@ -1049,7 +1049,7 @@ impl PacketManager {
             warn!("Receive stream for addr={} disconnected.  Removing it from the receive queue and continuing as normal.", addr);
             self.async_close_connection(addr)
                 .await
-                .expect(format!("Could not close connection for addr={}", addr).as_str());
+                .unwrap_or_else(|_| panic!("Could not close connection for addr={}", addr));
         }
 
         if let Some(e) = err {
@@ -1302,7 +1302,7 @@ impl PacketManager {
                 for addr in res.0.iter() {
                     warn!("Send stream for addr={} disconnected.  Removing it from the send queue and continuing as normal.", addr);
                     self.close_connection(addr)
-                        .expect(format!("Could not close connection for addr={}", addr).as_str());
+                        .unwrap_or_else(|_| panic!("Could not close connection for addr={}", addr));
                 }
 
                 res.1
@@ -1349,7 +1349,7 @@ impl PacketManager {
             );
             self.async_close_connection(addr)
                 .await
-                .expect(format!("Could not close connection for addr={}", addr).as_str());
+                .unwrap_or_else(|_| panic!("Could not close connection for addr={}", addr));
         }
 
         if let Some(e) = err {
@@ -1440,7 +1440,7 @@ impl PacketManager {
                             let addr_clone = addr.clone();
                             warn!("Send stream for addr={} disconnected.  Removing it from the send queue and returning error.", addr);
                             self.close_connection(addr)
-                                .expect(format!("Could not close connection for addr={}", addr_clone).as_str());
+                                .unwrap_or_else(|_| panic!("Could not close connection for addr={}", addr_clone));
                             Err(e)
                         }
                     },
@@ -1483,7 +1483,7 @@ impl PacketManager {
                         warn!("Send stream for addr={} disconnected.  Removing it from the send queue and returning error.", addr);
                         self.async_close_connection(addr)
                             .await
-                            .expect(format!("Could not close connection for addr={}", addr_clone).as_str());
+                            .unwrap_or_else(|_| panic!("Could not close connection for addr={}", addr_clone));
                         Err(e)
                     }
                 }
@@ -1612,7 +1612,7 @@ impl PacketManager {
         if let Some((id, conn)) = client_connections.get(&addr) {
             debug!("Forcefully closing connection for client addr={}, id={}", addr, id);
             conn.close(
-                VarInt::from(1 as u8),
+                VarInt::from(1_u8),
                 "PacketManager::close_connection() called for this connection".as_bytes(),
             );
         }
@@ -1639,7 +1639,7 @@ impl PacketManager {
         if let Some((id, conn)) = client_connections.get(&addr) {
             debug!("Forcefully closing connection for client addr={}, id={}", addr, id);
             conn.close(
-                VarInt::from(1 as u8),
+                VarInt::from(1_u8),
                 "PacketManager::close_connection() called for this connection".as_bytes(),
             );
         }
