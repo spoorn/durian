@@ -1,6 +1,6 @@
 #![allow(clippy::type_complexity)]
 
-use std::any::{Any, type_name, TypeId};
+use std::any::{type_name, Any, TypeId};
 use std::error::Error;
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -14,13 +14,13 @@ use log::{debug, error, trace, warn};
 use quinn::{Connection, Endpoint, ReadError, RecvStream, SendStream, VarInt, WriteError};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::runtime::Runtime;
-use tokio::sync::{mpsc, RwLock};
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::Receiver;
+use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
 
-use crate::{CloseError, ConnectionError, ErrorType, ReceiveError, SendError};
 use crate::quinn_helpers::{make_client_endpoint, make_server_endpoint};
+use crate::{CloseError, ConnectionError, ErrorType, ReceiveError, SendError};
 
 const FRAME_BOUNDARY: &[u8] = b"AAAAAA031320050421";
 
@@ -197,7 +197,7 @@ pub struct ClientConfig {
     ///
     /// ```
     /// use durian::ServerConfig;
-    /// 
+    ///
     /// let mut config = ServerConfig::new("127.0.0.1:5000", 0, None, 2, 2);
     /// config.with_alpn_protocols(&[b"hq-29"]);
     /// ```
@@ -276,7 +276,7 @@ pub struct ServerConfig {
     ///
     /// ```
     /// use durian::ServerConfig;
-    /// 
+    ///
     /// let mut config = ServerConfig::new("127.0.0.1:5000", 0, None, 2, 2);
     /// config.with_alpn_protocols(&[b"hq-29"]);
     /// ```
@@ -300,7 +300,7 @@ impl ServerConfig {
             num_send_streams,
             keep_alive_interval: None,
             idle_timeout: None,
-            alpn_protocols: None
+            alpn_protocols: None,
         }
     }
 
@@ -319,7 +319,7 @@ impl ServerConfig {
             num_send_streams,
             keep_alive_interval: None,
             idle_timeout: None,
-            alpn_protocols: None
+            alpn_protocols: None,
         }
     }
 
@@ -339,7 +339,7 @@ impl ServerConfig {
             num_send_streams,
             keep_alive_interval: None,
             idle_timeout: None,
-            alpn_protocols: None
+            alpn_protocols: None,
         }
     }
 
@@ -443,7 +443,7 @@ impl PacketManager {
                     &self.new_rxs,
                     &self.new_send_streams,
                     &mut self.server_connection,
-                    &mut self.source.1
+                    &mut self.source.1,
                 ))
             }
         }
@@ -473,9 +473,9 @@ impl PacketManager {
             &self.new_rxs,
             &self.new_send_streams,
             &mut self.server_connection,
-            &mut self.source.1
+            &mut self.source.1,
         )
-            .await
+        .await
     }
 
     /// Initialize a server side `PacketManager`
@@ -504,7 +504,7 @@ impl PacketManager {
                     &self.new_rxs,
                     &self.new_send_streams,
                     &self.client_connections,
-                    &mut self.source.1
+                    &mut self.source.1,
                 ))
             }
         }
@@ -534,9 +534,9 @@ impl PacketManager {
             &self.new_rxs,
             &self.new_send_streams,
             &self.client_connections,
-            &mut self.source.1
+            &mut self.source.1,
         )
-            .await
+        .await
     }
 
     fn validate_connection_prereqs(
@@ -561,7 +561,7 @@ impl PacketManager {
         new_rxs: &Arc<RwLock<Vec<(String, HashMap<u32, (RwLock<Receiver<Bytes>>, JoinHandle<()>)>)>>>,
         new_send_streams: &Arc<RwLock<Vec<(String, HashMap<u32, RwLock<SendStream>>)>>>,
         client_connections: &Arc<RwLock<HashMap<String, (u32, Connection)>>>,
-        source_endpoint: &mut Option<Arc<Endpoint>>
+        source_endpoint: &mut Option<Arc<Endpoint>>,
     ) -> Result<(), ConnectionError> {
         debug!("Initiating server with {:?}", server_config);
 
@@ -569,7 +569,7 @@ impl PacketManager {
             server_config.addr.parse()?,
             server_config.keep_alive_interval,
             server_config.idle_timeout,
-            server_config.alpn_protocols
+            server_config.alpn_protocols,
         )?;
         let endpoint = Arc::new(endpoint);
         let _ = source_endpoint.insert(Arc::clone(&endpoint));
@@ -592,7 +592,7 @@ impl PacketManager {
                 num_receive_streams,
                 num_send_streams,
             )
-                .await?;
+            .await?;
             let res = PacketManager::spawn_receive_thread(&addr.to_string(), recv_streams, runtime.as_ref())?;
             new_rxs.write().await.push((addr.to_string(), res));
             new_send_streams.write().await.push((addr.to_string(), server_send_streams));
@@ -626,7 +626,7 @@ impl PacketManager {
                             num_receive_streams,
                             num_send_streams,
                         )
-                            .await?;
+                        .await?;
                         let res =
                             PacketManager::spawn_receive_thread(&addr.to_string(), recv_streams, arc_runtime.as_ref())?;
                         arc_rx.write().await.push((addr.to_string(), res));
@@ -650,7 +650,7 @@ impl PacketManager {
                                 num_receive_streams,
                                 num_send_streams,
                             )
-                                .await?;
+                            .await?;
                             let res = PacketManager::spawn_receive_thread(
                                 &addr.to_string(),
                                 recv_streams,
@@ -683,7 +683,7 @@ impl PacketManager {
         new_rxs: &Arc<RwLock<Vec<(String, HashMap<u32, (RwLock<Receiver<Bytes>>, JoinHandle<()>)>)>>>,
         new_send_streams: &Arc<RwLock<Vec<(String, HashMap<u32, RwLock<SendStream>>)>>>,
         server_connection: &mut Option<(String, Connection)>,
-        source_endpoint: &mut Option<Arc<Endpoint>>
+        source_endpoint: &mut Option<Arc<Endpoint>>,
     ) -> Result<(), ConnectionError> {
         debug!("Initiating client with {:?}", client_config);
         // Bind this endpoint to a UDP socket on the given client address.
@@ -692,7 +692,7 @@ impl PacketManager {
             &[],
             client_config.keep_alive_interval,
             client_config.idle_timeout,
-            client_config.alpn_protocols
+            client_config.alpn_protocols,
         )?;
         let endpoint = Arc::new(endpoint);
         let _ = source_endpoint.insert(Arc::clone(&endpoint));
@@ -707,7 +707,7 @@ impl PacketManager {
             client_config.num_receive_streams,
             client_config.num_send_streams,
         )
-            .await?;
+        .await?;
         let res = PacketManager::spawn_receive_thread(&addr.to_string(), recv_streams, runtime.as_ref())?;
         new_rxs.write().await.push((addr.to_string(), res));
         new_send_streams.write().await.push((addr.to_string(), client_send_streams));
@@ -782,7 +782,10 @@ impl PacketManager {
                     match chunk.unwrap() {
                         None => {
                             // TODO: Error
-                            debug!("Receive stream for addr={}, packet id={} is finished, got None when reading chunks", addr_clone, id);
+                            debug!(
+                                "Receive stream for addr={}, packet id={} is finished, got None when reading chunks",
+                                addr_clone, id
+                            );
                             break;
                         }
                         Some(chunk) => {
@@ -890,11 +893,7 @@ impl PacketManager {
         let packet_type_id = TypeId::of::<T>();
         self.receive_packets.insert(self.next_receive_id, packet_type_id);
         self.recv_packet_builders.insert(packet_type_id, Box::new(packet_builder));
-        debug!(
-            "Registered Receive packet with id={}, type={}",
-            self.next_receive_id,
-            type_name::<T>()
-        );
+        debug!("Registered Receive packet with id={}, type={}", self.next_receive_id, type_name::<T>());
         self.next_receive_id += 1;
         Ok(())
     }
@@ -905,18 +904,11 @@ impl PacketManager {
     /// A [`Result`] containing `()` for success, [`SendError`] if registration failed.
     pub fn register_send_packet<T: Packet + 'static>(&mut self) -> Result<(), SendError> {
         if self.send_packets.contains_right(&TypeId::of::<T>()) {
-            return Err(SendError::new(format!(
-                "Type '{}' was already registered as a Send packet",
-                type_name::<T>()
-            )));
+            return Err(SendError::new(format!("Type '{}' was already registered as a Send packet", type_name::<T>())));
         }
 
         self.send_packets.insert(self.next_send_id, TypeId::of::<T>());
-        debug!(
-            "Registered Send packet with id={}, type={}",
-            self.next_send_id,
-            type_name::<T>()
-        );
+        debug!("Registered Send packet with id={}, type={}", self.next_send_id, type_name::<T>());
         self.next_send_id += 1;
         Ok(())
     }
@@ -942,7 +934,7 @@ impl PacketManager {
     /// and the second element will have a `None` if `blocking` was set to `false` and the associated destination address
     /// did not send the Packet type when this call queried for it, or [`Some`] containing a [`Vec`] of the Packets
     /// type `T` that was requested from the associated destination address.  
-    /// 
+    ///
     /// [`ReceiveError`] if there was an error fetching received packets.  If a channel was found disconnected, no
     /// Error will be returned with it, but instead it will be removed from the stream queue and output.
     ///
@@ -971,26 +963,25 @@ impl PacketManager {
                             &self.receive_packets,
                             &self.recv_packet_builders,
                             rxs,
-                        ).await;
+                        )
+                        .await;
 
                         match received {
                             Ok(received) => {
                                 res.push((addr.clone(), received));
-                            },
-                            Err(e) => {
-                                match e.error_type {
-                                    ErrorType::Unexpected => {
-                                        err = Some(e);
-                                        break;
-                                    }
-                                    ErrorType::Disconnected => {
-                                        addr_to_close.push(addr.clone());
-                                    }
-                                }
                             }
+                            Err(e) => match e.error_type {
+                                ErrorType::Unexpected => {
+                                    err = Some(e);
+                                    break;
+                                }
+                                ErrorType::Disconnected => {
+                                    addr_to_close.push(addr.clone());
+                                }
+                            },
                         }
                     }
-                    
+
                     if let Some(e) = err {
                         return (addr_to_close, Err(e));
                     }
@@ -999,11 +990,12 @@ impl PacketManager {
 
                 for addr in res.0.iter() {
                     warn!("Receive stream for addr={} disconnected.  Removing it from the receive queue and continuing as normal.", addr);
-                    self.close_connection(addr).expect(format!("Could not close connection for addr={}", addr).as_str());
-                } 
-                
+                    self.close_connection(addr)
+                        .expect(format!("Could not close connection for addr={}", addr).as_str());
+                }
+
                 res.1
-            },
+            }
         }
     }
 
@@ -1034,31 +1026,32 @@ impl PacketManager {
                 &self.receive_packets,
                 &self.recv_packet_builders,
                 rxs,
-            ).await;
-            
+            )
+            .await;
+
             match received {
                 Ok(received) => {
                     res.push((addr.clone(), received));
-                },
-                Err(e) => {
-                    match e.error_type {
-                        ErrorType::Unexpected => {
-                            err = Some(e);
-                            break;
-                        }
-                        ErrorType::Disconnected => {
-                            addr_to_close.push(addr.clone());
-                        }
-                    }
                 }
+                Err(e) => match e.error_type {
+                    ErrorType::Unexpected => {
+                        err = Some(e);
+                        break;
+                    }
+                    ErrorType::Disconnected => {
+                        addr_to_close.push(addr.clone());
+                    }
+                },
             }
         }
-        
+
         for addr in addr_to_close.iter() {
             warn!("Receive stream for addr={} disconnected.  Removing it from the receive queue and continuing as normal.", addr);
-            self.async_close_connection(addr).await.expect(format!("Could not close connection for addr={}", addr).as_str());
+            self.async_close_connection(addr)
+                .await
+                .expect(format!("Could not close connection for addr={}", addr).as_str());
         }
-        
+
         if let Some(e) = err {
             return Err(e);
         }
@@ -1084,7 +1077,7 @@ impl PacketManager {
     /// # Returns
     /// A [`Result`] containing [`None`] if the destination address did not send any Packets of this type, else [`Some`]
     /// containing a [`Vec`] of those received packets.
-    /// 
+    ///
     /// [`ReceiveError`] if error occurred fetching received packets.
     ///
     /// # Panics
@@ -1136,7 +1129,8 @@ impl PacketManager {
             &self.receive_packets,
             &self.recv_packet_builders,
             rxs.1,
-        ).await
+        )
+        .await
     }
 
     // Assumes does not have more than one client to send to, should be checked by callers
@@ -1159,10 +1153,10 @@ impl PacketManager {
         if blocking {
             match rx.recv().await {
                 None => {
-                    return Err(ReceiveError::new_with_type(format!(
-                        "Receiver channel for packet type {} was disconnected",
-                        type_name::<T>()
-                    ), ErrorType::Disconnected));
+                    return Err(ReceiveError::new_with_type(
+                        format!("Receiver channel for packet type {} was disconnected", type_name::<T>()),
+                        ErrorType::Disconnected,
+                    ));
                 }
                 Some(bytes) => {
                     PacketManager::receive_bytes::<T, U>(bytes, packet_builder, &mut res)?;
@@ -1181,10 +1175,10 @@ impl PacketManager {
                         break;
                     }
                     TryRecvError::Disconnected => {
-                        return Err(ReceiveError::new_with_type(format!(
-                            "Receiver channel for packet type {} was disconnected",
-                            type_name::<T>()
-                        ), ErrorType::Disconnected));
+                        return Err(ReceiveError::new_with_type(
+                            format!("Receiver channel for packet type {} was disconnected", type_name::<T>()),
+                            ErrorType::Disconnected,
+                        ));
                     }
                 },
             }
@@ -1193,13 +1187,7 @@ impl PacketManager {
         if res.is_empty() {
             return Ok(None);
         }
-        debug!(
-            "Fetched {} received packets of type={}, id={}, from addr={}",
-            res.len(),
-            type_name::<T>(),
-            id,
-            addr
-        );
+        debug!("Fetched {} received packets of type={}, id={}, from addr={}", res.len(), type_name::<T>(), id, addr);
         Ok(Some(res))
     }
 
@@ -1261,7 +1249,7 @@ impl PacketManager {
     }
 
     /// Broadcast a Packet to all destination addresses
-    /// 
+    ///
     /// If any `send` channels are disconnected, they will be removed from the send stream queue and a warning will be
     /// logged, and no error will be indicated from this function.
     ///
@@ -1287,7 +1275,9 @@ impl PacketManager {
                     // If we find any streams are closed, save them to cleanup and close the connections after iterating
                     let mut addr_to_close = Vec::new();
                     for (addr, send_streams) in self.send_streams.iter() {
-                        let sent = PacketManager::async_send_helper::<T>(&packet, addr, &self.send_packets, send_streams).await;
+                        let sent =
+                            PacketManager::async_send_helper::<T>(&packet, addr, &self.send_packets, send_streams)
+                                .await;
 
                         if let Err(e) = sent {
                             match e.error_type {
@@ -1308,14 +1298,15 @@ impl PacketManager {
 
                     (addr_to_close, Ok(()))
                 });
-                
+
                 for addr in res.0.iter() {
                     warn!("Send stream for addr={} disconnected.  Removing it from the send queue and continuing as normal.", addr);
-                    self.close_connection(addr).expect(format!("Could not close connection for addr={}", addr).as_str());
+                    self.close_connection(addr)
+                        .expect(format!("Could not close connection for addr={}", addr).as_str());
                 }
-                
+
                 res.1
-            },
+            }
         }
     }
 
@@ -1352,14 +1343,19 @@ impl PacketManager {
         }
 
         for addr in addr_to_close.iter() {
-            warn!("Send stream for addr={} disconnected.  Removing it from the send queue and continuing as normal.", addr);
-            self.async_close_connection(addr).await.expect(format!("Could not close connection for addr={}", addr).as_str());
+            warn!(
+                "Send stream for addr={} disconnected.  Removing it from the send queue and continuing as normal.",
+                addr
+            );
+            self.async_close_connection(addr)
+                .await
+                .expect(format!("Could not close connection for addr={}", addr).as_str());
         }
 
         if let Some(e) = err {
             return Err(e);
         }
-        
+
         Ok(())
     }
 
@@ -1427,29 +1423,27 @@ impl PacketManager {
             Some(runtime) => {
                 let addr = addr.into();
                 let res = match self.send_streams.get(&addr) {
-                    None => {
-                        Err(SendError::new(format!("Could not find Send stream for address {}", addr)))
-                    }
-                    Some(send_streams) => {
-                        runtime.block_on(PacketManager::async_send_helper::<T>(&packet, &addr, &self.send_packets, send_streams))                    
-                    }
+                    None => Err(SendError::new(format!("Could not find Send stream for address {}", addr))),
+                    Some(send_streams) => runtime.block_on(PacketManager::async_send_helper::<T>(
+                        &packet,
+                        &addr,
+                        &self.send_packets,
+                        send_streams,
+                    )),
                 };
 
                 match res {
-                    Ok(_) => { Ok(()) }
-                    Err(e) => {
-                        match e.error_type {
-                            ErrorType::Unexpected => {
-                                Err(e)
-                            }
-                            ErrorType::Disconnected => {
-                                let addr_clone = addr.clone();
-                                warn!("Send stream for addr={} disconnected.  Removing it from the send queue and returning error.", addr);
-                                self.close_connection(addr).expect(format!("Could not close connection for addr={}", addr_clone).as_str());
-                                Err(e)
-                            }
+                    Ok(_) => Ok(()),
+                    Err(e) => match e.error_type {
+                        ErrorType::Unexpected => Err(e),
+                        ErrorType::Disconnected => {
+                            let addr_clone = addr.clone();
+                            warn!("Send stream for addr={} disconnected.  Removing it from the send queue and returning error.", addr);
+                            self.close_connection(addr)
+                                .expect(format!("Could not close connection for addr={}", addr_clone).as_str());
+                            Err(e)
                         }
-                    }
+                    },
                 }
             }
         }
@@ -1473,25 +1467,23 @@ impl PacketManager {
         self.async_update_new_senders().await;
         let addr = addr.into();
         let res = match self.send_streams.get(&addr) {
-            None => {
-                Err(SendError::new(format!("Could not find Send stream for address {}", addr)))
-            }
+            None => Err(SendError::new(format!("Could not find Send stream for address {}", addr))),
             Some(send_streams) => {
                 PacketManager::async_send_helper::<T>(&packet, &addr, &self.send_packets, send_streams).await
             }
         };
-        
+
         match res {
-            Ok(_) => { Ok(()) }
+            Ok(_) => Ok(()),
             Err(e) => {
                 match e.error_type {
-                    ErrorType::Unexpected => {
-                        Err(e)
-                    }
+                    ErrorType::Unexpected => Err(e),
                     ErrorType::Disconnected => {
                         let addr_clone = addr.clone();
                         warn!("Send stream for addr={} disconnected.  Removing it from the send queue and returning error.", addr);
-                        self.async_close_connection(addr).await.expect(format!("Could not close connection for addr={}", addr_clone).as_str());
+                        self.async_close_connection(addr)
+                            .await
+                            .expect(format!("Could not close connection for addr={}", addr_clone).as_str());
                         Err(e)
                     }
                 }
@@ -1542,7 +1534,10 @@ impl PacketManager {
             match e {
                 WriteError::Stopped(_) => {}
                 WriteError::ConnectionLost(e) => {
-                    return Err(SendError::new_with_type(format!("Send stream for addr={}, packet id={} is disconnected: {:?}", addr, id, e), ErrorType::Disconnected));
+                    return Err(SendError::new_with_type(
+                        format!("Send stream for addr={}, packet id={} is disconnected: {:?}", addr, id, e),
+                        ErrorType::Disconnected,
+                    ));
                 }
                 WriteError::UnknownStream => {}
                 WriteError::ZeroRttRejected => {}
@@ -1596,15 +1591,15 @@ impl PacketManager {
         }
         Some(client_connections.get(&addr).unwrap().0)
     }
-    
+
     /// Close the connection with a destination Socket address
-    /// 
+    ///
     /// __Warning: this will forcefully close the connection, causing any Packets in stream queues that haven't already
     /// sent over the wire to be dropped.__
-    /// 
+    ///
     /// Cleans up resources associated with the connection internal to [`PacketManager`].  A Packet will be sent to the
     /// destination address detailing the reason of connection closure.
-    /// 
+    ///
     /// # Returns
     /// A [`Result`] containing `()` on success, [`CloseError`] if error occurred while closing the connection.  Note:
     /// connection resources may be partially closed.
@@ -1616,19 +1611,23 @@ impl PacketManager {
         let mut client_connections = self.client_connections.blocking_write();
         if let Some((id, conn)) = client_connections.get(&addr) {
             debug!("Forcefully closing connection for client addr={}, id={}", addr, id);
-            conn.close(VarInt::from(1 as u8), "PacketManager::close_connection() called for this connection".as_bytes());
+            conn.close(
+                VarInt::from(1 as u8),
+                "PacketManager::close_connection() called for this connection".as_bytes(),
+            );
         }
         client_connections.remove(&addr);
+        // Note: We don't gracefully shut down the streams individually, as they should shut down on their own eventually
         self.send_streams.remove(&addr);
         self.rx.remove(&addr);
         Ok(())
     }
 
     /// Close the connection with a destination Socket address
-    /// 
+    ///
     /// __Warning: this will forcefully close the connection, causing any Packets in stream queues that haven't already
     /// sent over the wire to be dropped.__
-    /// 
+    ///
     /// Same as [`close_connection()`](`PacketManager::close_connection()`), except returns a Future and can be called
     /// from an async context.
     pub async fn async_close_connection<S: Into<String>>(&mut self, addr: S) -> Result<(), CloseError> {
@@ -1639,9 +1638,13 @@ impl PacketManager {
         let mut client_connections = self.client_connections.write().await;
         if let Some((id, conn)) = client_connections.get(&addr) {
             debug!("Forcefully closing connection for client addr={}, id={}", addr, id);
-            conn.close(VarInt::from(1 as u8), "PacketManager::close_connection() called for this connection".as_bytes());
+            conn.close(
+                VarInt::from(1 as u8),
+                "PacketManager::close_connection() called for this connection".as_bytes(),
+            );
         }
         client_connections.remove(&addr);
+        // Note: We don't gracefully shut down the streams individually, as they should shut down on their own eventually
         self.send_streams.remove(&addr);
         self.rx.remove(&addr);
         Ok(())
@@ -1684,10 +1687,7 @@ impl PacketManager {
         res: &mut Vec<T>,
     ) -> Result<(), ReceiveError> {
         if bytes.is_empty() {
-            return Err(ReceiveError::new(format!(
-                "Received empty bytes for packet type={}!",
-                type_name::<T>()
-            )));
+            return Err(ReceiveError::new(format!("Received empty bytes for packet type={}!", type_name::<T>())));
         }
         debug!("Received packet with id={} for type={}", res.len(), type_name::<T>());
         let packet = packet_builder.read(bytes).unwrap();
@@ -1861,7 +1861,7 @@ mod tests {
         assert!(server.await.is_ok());
     }
 
-    // Run with 
+    // Run with
     // $env:RUST_LOG="debug"; cargo test receive_packet_e2e_async_broadcast -- --nocapture
     #[test_log::test(tokio::test)]
     async fn receive_packet_e2e_async_broadcast() {
@@ -1915,7 +1915,7 @@ mod tests {
                         .is_ok());
                     sent_packets += 4;
                 }
-                
+
                 // When halfway, try disconnecting one of the clients
                 if client2_recv_packets >= client2_max_receive && !closed_client2 {
                     m.async_close_connection(client2_addr).await.unwrap();
@@ -1937,10 +1937,10 @@ mod tests {
                 if unwrapped.is_some() {
                     let mut packets = unwrapped.unwrap();
                     recv_packets += packets.len();
-                    client2_recv_packets += packets.len()/2;
+                    client2_recv_packets += packets.len() / 2;
                     all_test_packets.append(&mut packets);
                 }
-                
+
                 if !closed_client2 {
                     let (addr2, unwrapped2) = received_all.remove(0);
                     assert!((addr == client_addr || addr == client2_addr) && (addr != addr2));
@@ -1948,7 +1948,7 @@ mod tests {
                     if unwrapped2.is_some() {
                         let mut packets = unwrapped2.unwrap();
                         recv_packets += packets.len();
-                        client2_recv_packets += packets.len()/2;
+                        client2_recv_packets += packets.len() / 2;
                         all_test_packets.append(&mut packets);
                     }
                 }
@@ -1962,10 +1962,10 @@ mod tests {
                 if unwrapped.is_some() {
                     let mut packets = unwrapped.unwrap();
                     recv_packets += packets.len();
-                    client2_recv_packets += packets.len()/2;
+                    client2_recv_packets += packets.len() / 2;
                     all_other_packets.append(&mut packets);
                 }
-                
+
                 if !closed_client2 {
                     let (addr2, unwrapped2) = received_all.remove(0);
                     assert!((addr == client_addr || addr == client2_addr) && (addr != addr2));
@@ -1974,7 +1974,7 @@ mod tests {
                         assert!(unwrapped2.is_some());
                         let mut packets = unwrapped2.unwrap();
                         recv_packets += packets.len();
-                        client2_recv_packets += packets.len()/2;
+                        client2_recv_packets += packets.len() / 2;
                         all_other_packets.append(&mut packets);
                     }
                 }
@@ -2275,25 +2275,35 @@ mod tests {
                     if !client2_closed {
                         if let Err(e) = m.async_send_to::<Test>(client2_addr.to_string(), Test { id: 5 }).await {
                             match e.error_type {
-                                ErrorType::Unexpected => { panic!("Couldn't send Test to client 2 {:?}", e); }
-                                ErrorType::Disconnected => {  }
+                                ErrorType::Unexpected => {
+                                    panic!("Couldn't send Test to client 2 {:?}", e);
+                                }
+                                ErrorType::Disconnected => {}
                             }
                         }
                         if let Err(e) = m.async_send_to::<Test>(client2_addr.to_string(), Test { id: 8 }).await {
                             match e.error_type {
-                                ErrorType::Unexpected => { panic!("Couldn't send Test to client 2 {:?}", e); }
-                                ErrorType::Disconnected => {  }
+                                ErrorType::Unexpected => {
+                                    panic!("Couldn't send Test to client 2 {:?}", e);
+                                }
+                                ErrorType::Disconnected => {}
                             }
                         }
-                        if let Err(e) = m.async_send_to::<Other>(client2_addr.to_string(), Other {
-                            name: "spoorn".to_string(),
-                            id: 4,
-                        },
-                        )
-                            .await {
+                        if let Err(e) = m
+                            .async_send_to::<Other>(
+                                client2_addr.to_string(),
+                                Other {
+                                    name: "spoorn".to_string(),
+                                    id: 4,
+                                },
+                            )
+                            .await
+                        {
                             match e.error_type {
-                                ErrorType::Unexpected => { panic!("Couldn't send Test to client 2 {:?}", e); }
-                                ErrorType::Disconnected => {  }
+                                ErrorType::Unexpected => {
+                                    panic!("Couldn't send Test to client 2 {:?}", e);
+                                }
+                                ErrorType::Disconnected => {}
                             }
                         }
                         if let Err(e) = m
@@ -2304,10 +2314,13 @@ mod tests {
                                     id: 6,
                                 },
                             )
-                            .await {
+                            .await
+                        {
                             match e.error_type {
-                                ErrorType::Unexpected => { panic!("Couldn't send Test to client 2 {:?}", e); }
-                                ErrorType::Disconnected => {  }
+                                ErrorType::Unexpected => {
+                                    panic!("Couldn't send Test to client 2 {:?}", e);
+                                }
+                                ErrorType::Disconnected => {}
                             }
                         }
                     }
@@ -2358,7 +2371,7 @@ mod tests {
                     recv_packets += packets.len();
                     all_other_packets.append(&mut packets);
                 }
-                
+
                 if !client2_closed {
                     let (addr2, unwrapped2) = received_all.remove(0);
                     assert!((addr == client_addr || addr == client2_addr) && (addr != addr2));
@@ -2448,7 +2461,7 @@ mod tests {
                         .is_ok());
                     sent_packets += 4;
                 }
-                
+
                 // Close connection early for testing
                 if recv_packets >= client2_max_receive {
                     manager.async_close_connection(server_addr).await.unwrap();

@@ -1,6 +1,6 @@
-use durian::{bincode_packet, BinPacket, ClientConfig, Packet, PacketBuilder, PacketManager, ServerConfig, UnitPacket};
 use durian::bytes::Bytes;
 use durian::serde::{Deserialize, Serialize};
+use durian::{bincode_packet, BinPacket, ClientConfig, Packet, PacketBuilder, PacketManager, ServerConfig, UnitPacket};
 use std::error::Error;
 
 // Using #[bincode_packet]
@@ -135,14 +135,8 @@ fn sync_example() {
     server_manager.send(OtherPosition { x: 0, y: 1 }).unwrap();
     server_manager.send(ServerAck).unwrap();
 
-    println!(
-        "{:?}",
-        client_manager.received::<OtherPosition, OtherPositionPacketBuilder>(true).unwrap()
-    );
-    println!(
-        "{:?}",
-        client_manager.received::<ServerAck, ServerAckPacketBuilder>(true).unwrap()
-    );
+    println!("{:?}", client_manager.received::<OtherPosition, OtherPositionPacketBuilder>(true).unwrap());
+    println!("{:?}", client_manager.received::<ServerAck, ServerAckPacketBuilder>(true).unwrap());
 }
 
 /// E2E example of using `durian` from an asynchronous context
@@ -228,10 +222,7 @@ async fn async_sync_example() {
         "{:?}",
         client_manager.async_received::<OtherPosition, OtherPositionPacketBuilder>(true).await.unwrap()
     );
-    println!(
-        "{:?}",
-        client_manager.async_received::<ServerAck, ServerAckPacketBuilder>(true).await.unwrap()
-    );
+    println!("{:?}", client_manager.async_received::<ServerAck, ServerAckPacketBuilder>(true).await.unwrap());
 }
 
 // Run the synchronous example

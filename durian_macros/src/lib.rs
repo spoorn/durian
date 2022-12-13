@@ -87,7 +87,8 @@ pub fn bincode_packet(_attr: TokenStream, tokens: TokenStream) -> TokenStream {
                     }
                     .into();
                 }
-                Fields::Unit => {
+                Fields::Unit =>
+                {
                     #[allow(clippy::needless_return)]
                     return quote! {
                         #[derive(durian::UnitPacket)]
@@ -215,45 +216,45 @@ pub fn unit_packet(tokens: TokenStream) -> TokenStream {
     .into();
 }
 
-/// Convenience derive macro that implements [`Deref`] and [`DerefMut`] for a struct that contains a 
+/// Convenience derive macro that implements [`Deref`] and [`DerefMut`] for a struct that contains a
 /// `manager: PacketManager` field.
-/// 
+///
 /// This is especially useful in situations where you must wrap a PacketManager behind a struct, such as in Bevy where
 /// you want to insert the PacketManager as a Resource, but can't annotate the PacketManager struct itself.
-/// 
+///
 /// For example:
-/// 
+///
 /// ```rust
 /// #[derive(DerefPacketManager)]
 /// struct ClientPacketManager {
 ///     manager: PacketManager
 /// }
 /// ```
-/// 
+///
 /// Generates this code:
-/// 
+///
 /// ```rust
 /// struct ClientPacketManager {
 ///     manager: PacketManager
 /// }
-/// 
+///
 /// impl std::ops::Deref for ClientPacketManager {
 ///     type Target = (durian::PacketManager);
-/// 
+///
 ///     fn deref(&self) -> &Self::Target {
 ///         &self.manager
 ///     }
 /// }
-/// 
+///
 /// impl std::ops::DerefMut for ClientPacketManager {
 ///     fn deref_mut(&mut self) -> &mut Self::Target {
 ///         &mut self.manager
 ///     }
 /// }
 /// ```
-/// 
+///
 /// You can then automatically access `PacketManager` functions through a `ClientPacketManager` like this:
-/// 
+///
 /// ```rust
 /// let manager = ClientPacketManager { manager: PacketManager::new() };
 /// // Directly call PacketManager functions through our manager variable without accessing the underlying field
@@ -266,9 +267,9 @@ pub fn deref_packet_manager(tokens: TokenStream) -> TokenStream {
 
     match input.data {
         Data::Struct(DataStruct {
-                         fields: Fields::Named(fields),
-                         ..
-                     }) => {
+            fields: Fields::Named(fields),
+            ..
+        }) => {
             let mut has_manager = false;
             for field in fields.named.iter() {
                 if *field.ident.as_ref().unwrap() == *"manager" {
@@ -280,7 +281,7 @@ pub fn deref_packet_manager(tokens: TokenStream) -> TokenStream {
             if !has_manager {
                 panic!("DerefPacketManager can only be used on a struct with a 'manager: PacketManager' field")
             }
-        },
+        }
         _ => panic!("Only structs with named fields can be annotated with ErrorMessageNew"),
     };
 
@@ -288,12 +289,12 @@ pub fn deref_packet_manager(tokens: TokenStream) -> TokenStream {
     return quote! {
         impl std::ops::Deref for #name {
             type Target = (durian::PacketManager);
-        
+
             fn deref(&self) -> &Self::Target {
                 &self.manager
             }
         }
-        
+
         impl std::ops::DerefMut for #name {
             fn deref_mut(&mut self) -> &mut Self::Target {
                 &mut self.manager
@@ -339,7 +340,7 @@ pub fn error_only_message(tokens: TokenStream) -> TokenStream {
                     error_type: durian::ErrorType::Unexpected
                 }
             }
-            
+
             pub fn new_with_type<S: Into<String>>(message: S, error_type: durian::ErrorType) -> Self {
                 #name {
                     message: message.into(),

@@ -4,8 +4,8 @@ use std::net::AddrParseError;
 
 use quinn::ConnectError;
 
-use durian_macros::ErrorOnlyMessage;
 use crate as durian;
+use durian_macros::ErrorOnlyMessage;
 
 /// Error types when receiving an error on one of the [`PacketManager`](`crate::PacketManager`) APIs
 #[derive(Default, PartialEq, Eq, Copy, Clone, Debug)]
@@ -16,7 +16,7 @@ pub enum ErrorType {
     /// The stream or connection was disconnected.  The [`PacketManager`](`crate::PacketManager`) would have cleaned up the connection so
     /// subsequent calls should not run into this again for the same address.  Depending on the application, this may
     /// be perfectly normal/expected, or an error.
-    Disconnected
+    Disconnected,
 }
 
 /// Error when calling [`PacketManager::register_receive_packet()`](`crate::PacketManager::register_receive_packet()`), [`PacketManager::received_all()`](`crate::PacketManager::received_all()`),
@@ -26,7 +26,7 @@ pub struct ReceiveError {
     /// Error message
     pub message: String,
     /// Error type
-    pub error_type: ErrorType 
+    pub error_type: ErrorType,
 }
 
 impl Display for ReceiveError {
@@ -43,7 +43,7 @@ pub struct SendError {
     /// Error message
     pub message: String,
     /// Error type
-    pub error_type: ErrorType
+    pub error_type: ErrorType,
 }
 
 impl Display for SendError {
@@ -59,7 +59,7 @@ pub struct ConnectionError {
     /// Error message
     pub message: String,
     /// Error type
-    pub error_type: ErrorType
+    pub error_type: ErrorType,
 }
 
 impl Display for ConnectionError {
@@ -110,7 +110,7 @@ pub struct CloseError {
     /// Error message
     pub message: String,
     /// Error type
-    pub error_type: ErrorType
+    pub error_type: ErrorType,
 }
 
 impl Display for CloseError {
