@@ -65,7 +65,7 @@ Add `durian` to your Cargo.toml via `cargo add durian` or manually:
 
 ```toml
 [dependencies]
-durian = "0.1.x"
+durian = "0.2.x"
 ```
 
 # Packet/PacketBuilder
