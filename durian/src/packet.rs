@@ -1,6 +1,6 @@
 #![allow(clippy::type_complexity)]
 
-use std::any::{Any, type_name, TypeId};
+use std::any::{type_name, Any, TypeId};
 use std::cmp::max;
 use std::error::Error;
 use std::fmt::Debug;
@@ -15,13 +15,13 @@ use log::{debug, error, trace, warn};
 use quinn::{Connection, Endpoint, ReadError, RecvStream, SendStream, VarInt, WriteError};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::runtime::Runtime;
-use tokio::sync::{mpsc, RwLock};
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::Receiver;
+use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
 
-use crate::{CloseError, ConnectionError, ErrorType, ReceiveError, SendError};
 use crate::quinn_helpers::{make_client_endpoint, make_server_endpoint};
+use crate::{CloseError, ConnectionError, ErrorType, ReceiveError, SendError};
 
 const FRAME_BOUNDARY: &[u8] = b"AAAAAA031320050421";
 
@@ -251,7 +251,7 @@ pub struct ServerConfig {
     /// for `wait_for_clients` number of client connections.
     pub total_expected_clients: Option<u32>,
     /// Set the max number of concurrent connection accepts to process at any given time.
-    /// 
+    ///
     /// A thread will be spawned for each, allowing `max_concurrent_accepts` connections to come in at the same time.
     /// Default to `wait_for_clients + total_expected_clients(if set)`, else number of cores available.
     pub max_concurrent_accepts: u32,
@@ -302,7 +302,10 @@ impl ServerConfig {
             addr: addr.into(),
             wait_for_clients,
             total_expected_clients,
-            max_concurrent_accepts: max(num_cpus::get() as u32, if let Some(expected) = total_expected_clients { expected } else { 0 } - wait_for_clients),
+            max_concurrent_accepts: max(
+                num_cpus::get() as u32,
+                if let Some(expected) = total_expected_clients { expected } else { 0 } - wait_for_clients,
+            ),
             num_receive_streams,
             num_send_streams,
             keep_alive_interval: None,
@@ -369,7 +372,7 @@ impl ServerConfig {
         self.alpn_protocols = Some(protocols.iter().map(|&x| x.into()).collect());
         self
     }
-    
+
     /// Set the max concurrent accept connections
     pub fn with_max_concurrent_accepts(&mut self, max_concurrent_accepts: u32) -> &mut Self {
         self.max_concurrent_accepts = max_concurrent_accepts;
@@ -648,9 +651,12 @@ impl PacketManager {
                                 num_receive_streams,
                                 num_send_streams,
                             )
-                                .await?;
-                            let res =
-                                PacketManager::spawn_receive_thread(&addr.to_string(), recv_streams, arc_runtime.as_ref())?;
+                            .await?;
+                            let res = PacketManager::spawn_receive_thread(
+                                &addr.to_string(),
+                                recv_streams,
+                                arc_runtime.as_ref(),
+                            )?;
                             arc_rx.write().await.push((addr.to_string(), res));
                             arc_send_streams.write().await.push((addr.to_string(), send_streams));
                             client_connections.write().await.insert(addr.to_string(), (client_id, conn));
@@ -672,7 +678,7 @@ impl PacketManager {
                                     num_receive_streams,
                                     num_send_streams,
                                 )
-                                    .await?;
+                                .await?;
                                 let res = PacketManager::spawn_receive_thread(
                                     &addr.to_string(),
                                     recv_streams,
@@ -687,7 +693,7 @@ impl PacketManager {
                     }
                     Ok::<(), Box<ConnectionError>>(())
                 };
-                
+
                 let accept_client_thread = match runtime.as_ref() {
                     None => tokio::spawn(accept_client_task),
                     Some(runtime) => runtime.spawn(accept_client_task),
@@ -938,7 +944,9 @@ impl PacketManager {
     /// Fetches all received packets from all destination addresses
     ///
     /// This reads from all `receive` channels and deserializes the [`Packets`](`Packet`) requested.  Any channel that
-    /// is found disconnected will be removed from the stream queue and a warning will be logged.
+    /// is found disconnected will be removed from the stream queue and a warning will be logged.  If a reading from a
+    /// receive channel ran into an unexpected error, this function will stop reading from other channels and return
+    /// the error.
     ///
     /// # Type Arguments
     /// * `T: Packet + 'static` - The [`Packet`] type to request
@@ -1270,10 +1278,33 @@ impl PacketManager {
         }
     }
 
+    #[inline]
+    fn receive_bytes<T: Packet + 'static, U: PacketBuilder<T> + 'static>(
+        bytes: Bytes,
+        packet_builder: &U,
+        res: &mut Vec<T>,
+    ) -> Result<(), ReceiveError> {
+        if bytes.is_empty() {
+            return Err(ReceiveError::new(format!("Received empty bytes for packet type={}!", type_name::<T>())));
+        }
+        debug!("Received packet with id={} for type={}", res.len(), type_name::<T>());
+        let packet = match packet_builder.read(bytes) {
+            Ok(p) => p,
+            Err(e) => {
+                let err_msg = format!("Could not build packet of type={} from bytes: {:?}", type_name::<T>(), e);
+                error!("{}", err_msg);
+                return Err(ReceiveError::new_with_type(err_msg, ErrorType::Unexpected));
+            }
+        };
+        res.push(packet);
+        Ok(())
+    }
+
     /// Broadcast a Packet to all destination addresses
     ///
     /// If any `send` channels are disconnected, they will be removed from the send stream queue and a warning will be
-    /// logged, and no error will be indicated from this function.
+    /// logged, and no error will be indicated from this function.  If there was an unexpected error, no further packets
+    /// will be sent, and the function will stop to return an error.
     ///
     /// # Arguments
     /// * `packet` - The [`Packet`] to broadcast
@@ -1553,20 +1584,29 @@ impl PacketManager {
         debug!("Sending bytes to {} with len {}", addr, bytes.len());
         trace!("Sending bytes {:?}", bytes);
         if let Err(e) = send_stream.write_chunk(bytes).await {
-            match e {
-                WriteError::Stopped(_) => {}
-                WriteError::ConnectionLost(e) => {
-                    return Err(SendError::new_with_type(
-                        format!("Send stream for addr={}, packet id={} is disconnected: {:?}", addr, id, e),
-                        ErrorType::Disconnected,
-                    ));
-                }
-                WriteError::UnknownStream => {}
-                WriteError::ZeroRttRejected => {}
-            }
+            return match e {
+                WriteError::ConnectionLost(e) => Err(SendError::new_with_type(
+                    format!("Send stream for addr={}, packet id={} is disconnected: {:?}", addr, id, e),
+                    ErrorType::Disconnected,
+                )),
+                _ => Err(SendError::new_with_type(
+                    format!("Send stream for addr={}, packet id={} ran into unexpected error: {:?}", addr, id, e),
+                    ErrorType::Unexpected,
+                )),
+            };
         }
         trace!("Sending FRAME_BOUNDARY");
-        send_stream.write_all(FRAME_BOUNDARY).await.unwrap();
+        if let Err(e) = send_stream.write_all(FRAME_BOUNDARY).await {
+            return match e {
+                WriteError::ConnectionLost(e) => {
+                    Err(SendError::new_with_type(
+                        format!("Send stream for addr={}, packet id={} is disconnected: {:?}", addr, id, e),
+                        ErrorType::Disconnected,
+                    ))
+                },
+                _ => { Err(SendError::new_with_type(format!("Send stream for addr={}, packet id={} ran into unexpected error when writing frame boundary: {:?}", addr, id, e), ErrorType::Unexpected)) }
+            };
+        }
         debug!("Sent packet to {} with id={}, type={}", addr, id, type_name::<T>());
         Ok(())
     }
@@ -1633,10 +1673,7 @@ impl PacketManager {
         let mut client_connections = self.client_connections.blocking_write();
         if let Some((id, conn)) = client_connections.get(&addr) {
             debug!("Forcefully closing connection for client addr={}, id={}", addr, id);
-            conn.close(
-                VarInt::from(1_u8),
-                "PacketManager::close_connection() called for this connection".as_bytes(),
-            );
+            conn.close(VarInt::from(1_u8), "PacketManager::close_connection() called for this connection".as_bytes());
         }
         client_connections.remove(&addr);
         // Note: We don't gracefully shut down the streams individually, as they should shut down on their own eventually
@@ -1660,10 +1697,7 @@ impl PacketManager {
         let mut client_connections = self.client_connections.write().await;
         if let Some((id, conn)) = client_connections.get(&addr) {
             debug!("Forcefully closing connection for client addr={}, id={}", addr, id);
-            conn.close(
-                VarInt::from(1_u8),
-                "PacketManager::close_connection() called for this connection".as_bytes(),
-            );
+            conn.close(VarInt::from(1_u8), "PacketManager::close_connection() called for this connection".as_bytes());
         }
         client_connections.remove(&addr);
         // Note: We don't gracefully shut down the streams individually, as they should shut down on their own eventually
@@ -1693,26 +1727,24 @@ impl PacketManager {
             None => {
                 panic!("PacketManager does not have a runtime instance associated with it.  Did you mean to call async_finish_connection()?");
             }
-            Some(runtime) => {
-                runtime.block_on(async {
-                    if let Some(send_streams) = self.send_streams.get(&addr) {
-                        for send_stream in send_streams.values() {
-                            if let Err(e) = send_stream.write().await.finish().await {
-                                debug!("Could not finish send stream for addr={}.  Continuing to close connection: {:?}", addr, e);
-                            }
+            Some(runtime) => runtime.block_on(async {
+                if let Some(send_streams) = self.send_streams.get(&addr) {
+                    for send_stream in send_streams.values() {
+                        if let Err(e) = send_stream.write().await.finish().await {
+                            debug!(
+                                "Could not finish send stream for addr={}.  Continuing to close connection: {:?}",
+                                addr, e
+                            );
                         }
                     }
-                })
-            }
+                }
+            }),
         };
         self.send_streams.remove(&addr);
         let mut client_connections = self.client_connections.blocking_write();
         if let Some((id, conn)) = client_connections.get(&addr) {
             debug!("Finishing connection for client addr={}, id={}", addr, id);
-            conn.close(
-                VarInt::from(1_u8),
-                "PacketManager::finish_connection() called for this connection".as_bytes(),
-            );
+            conn.close(VarInt::from(1_u8), "PacketManager::finish_connection() called for this connection".as_bytes());
         }
         client_connections.remove(&addr);
         self.rx.remove(&addr);
@@ -1740,10 +1772,7 @@ impl PacketManager {
         let mut client_connections = self.client_connections.write().await;
         if let Some((id, conn)) = client_connections.get(&addr) {
             debug!("Finishing connection for client addr={}, id={}", addr, id);
-            conn.close(
-                VarInt::from(1_u8),
-                "PacketManager::finish_connection() called for this connection".as_bytes(),
-            );
+            conn.close(VarInt::from(1_u8), "PacketManager::finish_connection() called for this connection".as_bytes());
         }
         client_connections.remove(&addr);
         self.rx.remove(&addr);
@@ -1777,21 +1806,6 @@ impl PacketManager {
             )));
         }
 
-        Ok(())
-    }
-
-    #[inline]
-    fn receive_bytes<T: Packet + 'static, U: PacketBuilder<T> + 'static>(
-        bytes: Bytes,
-        packet_builder: &U,
-        res: &mut Vec<T>,
-    ) -> Result<(), ReceiveError> {
-        if bytes.is_empty() {
-            return Err(ReceiveError::new(format!("Received empty bytes for packet type={}!", type_name::<T>())));
-        }
-        debug!("Received packet with id={} for type={}", res.len(), type_name::<T>());
-        let packet = packet_builder.read(bytes).unwrap();
-        res.push(packet);
         Ok(())
     }
 
@@ -2713,7 +2727,13 @@ mod tests {
                     }
                 );
             } else {
-                assert_eq!(packet, Other { name: "kiko".to_string(), id: 6, });
+                assert_eq!(
+                    packet,
+                    Other {
+                        name: "kiko".to_string(),
+                        id: 6,
+                    }
+                );
             }
         }
 
