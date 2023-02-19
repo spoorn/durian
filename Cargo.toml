@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "durian",
+    "durian_proc_macros",
     "durian_macros",
     "example",
     "bench"

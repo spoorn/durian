@@ -27,7 +27,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! durian = "0.2"
+//! durian = "0.3"
 //! ```
 //!
 //! # Packet/PacketBuilder
@@ -109,6 +109,8 @@
 //! This helps to ensure the client and servers are in sync on what Packets to send/receive, almost
 //! like ensuring they are on the same "version" so to speak, and is used to properly identify
 //! Packets.
+//!     - For your convenience, `durian_macros` comes bundled with 2 macros that simplify registration of send and
+//! receive packets: [`register_receive!()`](https://docs.rs/durian_macros/latest/durian_macros/#declarative-macros), and [`register_send!()`](https://docs.rs/durian_macros/latest/durian_macros/#declarative-macros)
 //!
 //! 3. Initiate connection(s) with [`init_client()`](`PacketManager::init_client()`) (or the async variant [`async_init_client()`](`PacketManager::async_init_client()`)
 //! if on the client side, else use [`init_server()`](`PacketManager::init_server()`) (or the async variant [`async_init_server)`](`PacketManager::async_init_server()`)
@@ -122,8 +124,7 @@
 //! Putting these together:
 //!
 //! ```rust
-//! use durian::{ClientConfig, PacketManager};
-//! use durian_macros::bincode_packet;
+//! use durian::{ClientConfig, PacketManager, bincode_packet, register_receive, register_send};
 //!
 //! #[bincode_packet]
 //! struct Position { x: i32, y: i32 }
@@ -139,10 +140,22 @@
 //!     let mut manager = PacketManager::new();
 //!
 //!     // Register send and receive packets
-//!     manager.register_receive_packet::<Position>(PositionPacketBuilder).unwrap();
-//!     manager.register_receive_packet::<ServerAck>(ServerAckPacketBuilder).unwrap();
-//!     manager.register_send_packet::<ClientAck>().unwrap();
-//!     manager.register_send_packet::<InputMovement>().unwrap();
+//!     // Using macros
+//!     let receive_results = register_receive!(
+//!         manager, 
+//!         (Position, PositionPacketBuilder), 
+//!         (ServerAck, ServerAckPacketBuilder)
+//!     );
+//!     let send_results = register_send!(manager, ClientAck, InputMovement);
+//!     // Validate registrations succeeded
+//!     assert!(receive_results.iter().all(|r| r.is_ok()));  
+//!     assert!(send_results.iter().all(|r| r.is_ok()));
+//!
+//!     // Or equivalently with manual registrations:
+//!     // manager.register_receive_packet::<Position>(PositionPacketBuilder).unwrap();
+//!     // manager.register_receive_packet::<ServerAck>(ServerAckPacketBuilder).unwrap();
+//!     // manager.register_send_packet::<ClientAck>().unwrap();
+//!     // manager.register_send_packet::<InputMovement>().unwrap();
 //!
 //!     // Initialize a client
 //!     let client_config = ClientConfig::new("127.0.0.1:5001", "127.0.0.1:5000", 2, 2);
@@ -159,10 +172,15 @@
 //!     let mut server_manager = PacketManager::new();
 //!
 //!     // Register send and receive packets
-//!     server_manager.register_receive_packet::<ClientAck>(ClientAckPacketBuilder).unwrap();
-//!     server_manager.register_receive_packet::<InputMovement>(InputMovementPacketBuilder).unwrap();
-//!     server_manager.register_send_packet::<Position>().unwrap();
-//!     server_manager.register_send_packet::<ServerAck>().unwrap();
+//!     let server_receive_results = register_receive!(
+//!         server_manager, 
+//!         (ClientAck, ClientAckPacketBuilder), 
+//!         (InputMovement, InputMovementPacketBuilder)
+//!     );
+//!     let server_send_results = register_send!(server_manager, Position, ServerAck);
+//!     // Validate registrations succeeded
+//!     assert!(server_receive_results.iter().all(|r| r.is_ok()));  
+//!     assert!(server_send_results.iter().all(|r| r.is_ok()));
 //!
 //!     // Initialize a client
 //!     let client_config = ClientConfig::new("127.0.0.1:5001", "127.0.0.1:5000", 2, 2);

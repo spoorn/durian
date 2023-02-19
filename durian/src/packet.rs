@@ -1,6 +1,6 @@
 #![allow(clippy::type_complexity)]
 
-use std::any::{type_name, Any, TypeId};
+use std::any::{Any, type_name, TypeId};
 use std::cmp::max;
 use std::error::Error;
 use std::fmt::Debug;
@@ -15,13 +15,13 @@ use log::{debug, error, trace, warn};
 use quinn::{Connection, Endpoint, ReadError, RecvStream, SendStream, VarInt, WriteError};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::runtime::Runtime;
+use tokio::sync::{mpsc, RwLock};
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::Receiver;
-use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
 
-use crate::quinn_helpers::{make_client_endpoint, make_server_endpoint};
 use crate::{CloseError, ConnectionError, ErrorType, ReceiveError, SendError};
+use crate::quinn_helpers::{make_client_endpoint, make_server_endpoint};
 
 const FRAME_BOUNDARY: &[u8] = b"AAAAAA031320050421";
 
@@ -1829,10 +1829,10 @@ mod tests {
     use tokio::time::sleep;
 
     use durian::packet::PacketManager;
-    use durian_macros::bincode_packet;
+    use durian_macros::{bincode_packet};
 
     use crate as durian;
-    use crate::{ClientConfig, ErrorType, ServerConfig};
+    use crate::{ClientConfig, ErrorType, register_receive, register_send, ServerConfig};
 
     #[bincode_packet]
     #[derive(Debug, PartialEq, Eq)]
@@ -2643,10 +2643,10 @@ mod tests {
         });
 
         // Client
-        assert!(manager.register_receive_packet::<Test>(TestPacketBuilder).is_ok());
-        assert!(manager.register_receive_packet::<Other>(OtherPacketBuilder).is_ok());
-        assert!(manager.register_send_packet::<Test>().is_ok());
-        assert!(manager.register_send_packet::<Other>().is_ok());
+        let receive_results = register_receive!(manager, (Test, TestPacketBuilder), (Other, OtherPacketBuilder));
+        assert!(receive_results.iter().all(|r| r.is_ok()));
+        let send_results = register_send!(manager, Test, Other);
+        assert!(send_results.iter().all(|r| r.is_ok()));
         let client_config = ClientConfig::new(client_addr, server_addr, 2, 2);
         let client = manager.async_init_client(client_config).await;
         println!("client1: {:#?}", client);
@@ -2763,10 +2763,10 @@ mod tests {
         // Server
         let server = tokio::spawn(async move {
             let mut m = PacketManager::new_for_async();
-            assert!(m.register_send_packet::<Test>().is_ok());
-            assert!(m.register_send_packet::<Other>().is_ok());
-            assert!(m.register_receive_packet::<Test>(TestPacketBuilder).is_ok());
-            assert!(m.register_receive_packet::<Other>(OtherPacketBuilder).is_ok());
+            let send_results = register_send!(m, Test, Other);
+            assert!(send_results.iter().all(|r| r.is_ok()));
+            let receive_results = register_receive!(m, [(Test, TestPacketBuilder), (Other, OtherPacketBuilder)]);
+            assert!(receive_results.iter().all(|r| r.is_ok()));
             let server_config = ServerConfig::new_with_max_clients(server_addr, 2, 2, 2);
             assert!(m.async_init_server(server_config).await.is_ok());
 
@@ -2964,10 +2964,10 @@ mod tests {
         let (client2_tx, mut client2_rx) = mpsc::channel(100);
         let client2 = tokio::spawn(async move {
             let mut manager = PacketManager::new_for_async();
-            assert!(manager.register_receive_packet::<Test>(TestPacketBuilder).is_ok());
-            assert!(manager.register_receive_packet::<Other>(OtherPacketBuilder).is_ok());
-            assert!(manager.register_send_packet::<Test>().is_ok());
-            assert!(manager.register_send_packet::<Other>().is_ok());
+            let receive_results = register_receive!(manager, [(Test, TestPacketBuilder), (Other, OtherPacketBuilder)]);
+            assert!(receive_results.iter().all(|r| r.is_ok()));
+            let send_results = register_send!(manager, [Test, Other]);
+            assert!(send_results.iter().all(|r| r.is_ok()));
             let client_config = ClientConfig::new(client2_addr, server_addr, 2, 2);
             assert!(manager.async_init_client(client_config).await.is_ok());
 
@@ -3068,10 +3068,10 @@ mod tests {
         });
 
         // Client
-        assert!(manager.register_receive_packet::<Test>(TestPacketBuilder).is_ok());
-        assert!(manager.register_receive_packet::<Other>(OtherPacketBuilder).is_ok());
-        assert!(manager.register_send_packet::<Test>().is_ok());
-        assert!(manager.register_send_packet::<Other>().is_ok());
+        let receive_results = register_receive!(manager, (Test, TestPacketBuilder), (Other, OtherPacketBuilder));
+        assert!(receive_results.iter().all(|r| r.is_ok()));
+        let send_results = register_send!(manager, Test, Other);
+        assert!(send_results.iter().all(|r| r.is_ok()));
         let client_config = ClientConfig::new(client_addr, server_addr, 2, 2);
         let client = manager.async_init_client(client_config).await;
         println!("client1: {:#?}", client);
