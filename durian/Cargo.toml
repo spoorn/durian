@@ -38,7 +38,7 @@ num_cpus = "1.14.0"
 
 [dev-dependencies]
 test-log = "0.2.11"
-env_logger = "*"
+env_logger = "0.10"
 tracing = {version = "0.1", default-features = false}
 tracing-subscriber = {version = "0.3", default-features = false, features = ["env-filter", "fmt"]}
 
