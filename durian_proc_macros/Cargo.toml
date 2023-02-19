@@ -1,0 +1,29 @@
+[package]
+name = "durian_proc_macros"
+version = "0.1.0"
+authors = ["Michael Trinh <spookump@gmail.com>"]
+categories = ["accessibility", "game-development", "network-programming", "games"]
+keywords = ["durian", "macros", "netcode", "packets", "gamedev"]
+description = "Procedural macros for the durian crate for ease of creating Packet structs"
+homepage = "https://github.com/spoorn/durian"
+repository = "https://github.com/spoorn/durian"
+license = "MIT"
+edition = "2021"
+readme = "README.md"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "durian_proc_macros"
+proc-macro = true
+doctest = false
+
+[dependencies]
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = { version = "1.0", features = ["full"] }
+bincode = "1.3.3"
+serde = { version = "1.0", features = ["derive"] }
+
+[dev-dependencies]
+durian = "0.1"
