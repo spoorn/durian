@@ -3,11 +3,14 @@ Macros for the `durian` crate
 
 These should not be used alone!  The macros depend on Traits and paths defined in `durian`
 
-Contains a few macros that help autogenerate Impl blocks for a struct for both `Packet` and `PacketBuilder`.  The only
+## Procedural Macros
+
+Procedural macros for easily annotating structs as [`Packets`](https://docs.rs/durian/latest/durian/trait.Packet.html) and automatically
+implementing [`PacketBuilders`](https://docs.rs/durian/latest/durian/trait.PacketBuilder.html). The only
 requirement is the struct must be de/serializable, meaning all nested fields also need to be
 de/serializable.
 
-`#[bincode_packet]` will de/serialize your Packet using [`bincode`] and applies necessary derive
+`#[bincode_packet]` will de/serialize your Packet using [`bincode`](https://docs.rs/bincode/latest/bincode/) and applies necessary derive
 macros automatically for you.
 
 ```rust
@@ -40,4 +43,62 @@ struct Position { x: i32, y: i32 }
 
 #[derive(UnitPacket)]
 struct Ack;
+```
+
+## Declarative Macros
+
+Regular macros for easy and concise calls to the [`PacketManager`](https://docs.rs/durian/latest/durian/struct.PacketManager.html).
+
+These include macros for registering all your `send` and `receive` packets:
+
+- [`register_send!(packet_manager, <send packets>...)`](`register_send`)
+- [`register_receive!(packet_manager, <receive packets>...)`](`register_receive`)
+
+Where the `<send packets>` a sequence of your `send` packet types, or a slice of those types, and
+`<receive packets>` are a sequence of tuples containing (your `receive` packet type, the associated packet builder),
+or a slice of those tuples.
+
+### Example:
+
+```rust
+use durian::{bincode_packet, register_send, register_receive, PacketManager};
+
+// Send packets
+#[bincode_packet]
+struct Position { x: i32, y: i32 }
+#[bincode_packet]
+struct Ack;
+
+// Receive packets
+#[bincode_packet]
+struct UpdatePosition { x: i32, y: i32 }
+#[bincode_packet]
+struct NewMessage { message: String }
+
+fn main() {
+    let manager = PacketManager::new();
+    let register_receive_results = register_receive!(
+        manager, 
+        (UpdatePosition, UpdatePositionPacketBuilder), 
+        (NewMessage, NewMessagePacketBuilder)
+    );
+    // Or equivalently in a slice, 
+    // register_receive_results!(manager, 
+    //      [(UpdatePosition, UpdatePositionPacketBuilder), (NewMessage, NewMessagePacketBuilder)]
+    // );`
+
+    let register_send_results = register_send!(manager, Position, Ack);
+    // Or equivalently in a slice, `register_send!(manager, [Position, Ack]);`
+
+    // You can then validate that all the registrations were successful:
+    assert!(register_receive_results.iter().all(|r| r.is_ok()));
+    assert!(register_send_results.iter().all(|r| r.is_ok()));
+
+    // The macros used above are equivalent to the following manual registration:
+    //
+    // manager.register_receive_packet::<UpdatePosition>(UpdatePositionPacketBuilder);
+    // manager.register_receive_packet::<NewMessage>(NewMessagePacketBuilder);
+    // manager.register_send_packet::<Position>();
+    // manager.register_send_packet::<Ack>();
+}
 ```
