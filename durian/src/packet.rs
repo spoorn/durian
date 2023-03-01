@@ -298,13 +298,19 @@ impl ServerConfig {
         num_receive_streams: u32,
         num_send_streams: u32,
     ) -> Self {
+        let mut expected_clients = if let Some(expected) = total_expected_clients { expected } else { 0 };
+        expected_clients = if expected_clients > wait_for_clients {
+            expected_clients - wait_for_clients
+        } else {
+            0
+        };
         ServerConfig {
             addr: addr.into(),
             wait_for_clients,
             total_expected_clients,
             max_concurrent_accepts: max(
                 num_cpus::get() as u32,
-                if let Some(expected) = total_expected_clients { expected } else { 0 } - wait_for_clients,
+                expected_clients,
             ),
             num_receive_streams,
             num_send_streams,
