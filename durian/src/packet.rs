@@ -298,6 +298,7 @@ impl ServerConfig {
         num_receive_streams: u32,
         num_send_streams: u32,
     ) -> Self {
+        // If total_expected_clients is erroneously set to lower than wait_for_clients, just set it to 0
         let mut expected_clients = if let Some(expected) = total_expected_clients { expected } else { 0 };
         expected_clients = if expected_clients > wait_for_clients {
             expected_clients - wait_for_clients
@@ -609,7 +610,7 @@ impl PacketManager {
             if client_connections.read().await.contains_key(&addr.to_string()) {
                 panic!("[server] Client with addr={} was already connected", addr);
             }
-            debug!("[server] connection accepted: addr={}", conn.remote_address());
+            println!("[server] connection accepted: addr={}", conn.remote_address());
             let (server_send_streams, recv_streams) = PacketManager::open_streams_for_connection(
                 addr.to_string(),
                 &conn,
@@ -665,7 +666,8 @@ impl PacketManager {
                             )?;
                             arc_rx.write().await.push((addr.to_string(), res));
                             arc_send_streams.write().await.push((addr.to_string(), send_streams));
-                            client_connections.write().await.insert(addr.to_string(), (client_id, conn));
+                            let mut client_connections = client_connections.write().await;
+                            client_connections.insert(addr.to_string(), (client_id, conn));
                             client_id += 1;
                         },
                         Some(expected_num_clients) => {
@@ -692,7 +694,8 @@ impl PacketManager {
                                 )?;
                                 arc_rx.write().await.push((addr.to_string(), res));
                                 arc_send_streams.write().await.push((addr.to_string(), send_streams));
-                                client_connections.write().await.insert(addr.to_string(), (client_id, conn));
+                                let mut client_connections = client_connections.write().await;
+                                client_connections.insert(addr.to_string(), (client_id, conn));
                                 client_id += 1;
                             }
                         }
@@ -1622,6 +1625,21 @@ impl PacketManager {
         self.client_connections.blocking_read().len() as u32
     }
 
+    /// Returns the number of clients attached to this server.  This will always return `0` if on a client side.
+    pub async fn async_get_num_clients(&self) -> u32 {
+        self.client_connections.read().await.len() as u32
+    }
+    
+    /// Returns the client connections in tuples of (client SocketAddress, client ID)
+    pub fn get_client_connections(&self) -> Vec<(String, u32)> {
+        self.client_connections.blocking_read().iter().map(|(addr, con)| (addr.clone(), con.0)).collect()
+    }
+
+    /// Returns the client connections in tuples of (client SocketAddress, client ID)
+    pub async fn async_get_client_connections(&self) -> Vec<(String, u32)> {
+        self.client_connections.read().await.iter().map(|(addr, con)| (addr.clone(), con.0)).collect()
+    }
+
     /// Returns the `Client ID` for a Socket address.  Client IDs start from 0 and are incremented in the order each
     /// client is connected to the server.  This can be helpful to associated some sort of numerical ID with clients.
     ///
@@ -1872,6 +1890,9 @@ mod tests {
             assert!(m.register_receive_packet::<Other>(OtherPacketBuilder).is_ok());
             let server_config = ServerConfig::new_listening(server_addr, 1, 2, 2);
             assert!(m.async_init_server(server_config).await.is_ok());
+            let client_connections = m.async_get_client_connections().await;
+            assert_eq!(client_connections.len(), 1);
+            assert_eq!(client_connections[0], (client_addr.to_string(), 0u32));
 
             for _ in 0..100 {
                 assert!(m.async_send::<Test>(Test { id: 5 }).await.is_ok());
@@ -1930,6 +1951,7 @@ mod tests {
         assert!(manager.register_send_packet::<Other>().is_ok());
         let client_config = ClientConfig::new(client_addr, server_addr, 2, 2);
         let client = manager.async_init_client(client_config).await;
+        assert!(manager.async_get_client_connections().await.is_empty());
         println!("{:#?}", client);
 
         assert!(client.is_ok());
@@ -2005,6 +2027,17 @@ mod tests {
             assert!(m.register_receive_packet::<Other>(OtherPacketBuilder).is_ok());
             let server_config = ServerConfig::new_listening(server_addr, 2, 2, 2);
             assert!(m.async_init_server(server_config).await.is_ok());
+            let client_connections = m.async_get_client_connections().await;
+            assert_eq!(client_connections.len(), 2);
+            let client1_is_first = client_connections[0].0 == client_addr.clone() && client_connections[0].1 == 0u32
+                || client_connections[1].0 == client_addr.clone() && client_connections[1].1 == 0u32;
+            if client1_is_first {
+                assert!(client_connections.contains(&(client_addr.to_string(), 0u32)));
+                assert!(client_connections.contains(&(client2_addr.to_string(), 1u32)));
+            } else {
+                assert!(client_connections.contains(&(client_addr.to_string(), 1u32)));
+                assert!(client_connections.contains(&(client2_addr.to_string(), 0u32)));
+            }
 
             let mut sent_packets = 0;
             let mut recv_packets = 0;
@@ -2147,6 +2180,7 @@ mod tests {
             assert!(manager.register_send_packet::<Other>().is_ok());
             let client_config = ClientConfig::new(client2_addr, server_addr, 2, 2);
             assert!(manager.async_init_client(client_config).await.is_ok());
+            assert!(manager.async_get_client_connections().await.is_empty());
 
             let mut sent_packets = 0;
             let mut recv_packets = 0;
@@ -2243,6 +2277,7 @@ mod tests {
         assert!(manager.register_send_packet::<Other>().is_ok());
         let client_config = ClientConfig::new(client_addr, server_addr, 2, 2);
         let client = manager.async_init_client(client_config).await;
+        assert!(manager.async_get_client_connections().await.is_empty());
         println!("client1: {:#?}", client);
 
         assert!(client.is_ok());
@@ -2359,6 +2394,17 @@ mod tests {
             assert!(m.register_receive_packet::<Other>(OtherPacketBuilder).is_ok());
             let server_config = ServerConfig::new_with_max_clients(server_addr, 2, 2, 2);
             assert!(m.async_init_server(server_config).await.is_ok());
+            let client_connections = m.async_get_client_connections().await;
+            assert_eq!(client_connections.len(), 2);
+            let client1_is_first = client_connections[0].0 == client_addr.clone() && client_connections[0].1 == 0u32
+                || client_connections[1].0 == client_addr.clone() && client_connections[1].1 == 0u32;
+            if client1_is_first {
+                assert!(client_connections.contains(&(client_addr.to_string(), 0u32)));
+                assert!(client_connections.contains(&(client2_addr.to_string(), 1u32)));
+            } else {
+                assert!(client_connections.contains(&(client_addr.to_string(), 1u32)));
+                assert!(client_connections.contains(&(client2_addr.to_string(), 0u32)));
+            }
 
             let mut sent_packets = 0;
             let mut recv_packets = 0;
@@ -2551,6 +2597,7 @@ mod tests {
             assert!(manager.register_send_packet::<Other>().is_ok());
             let client_config = ClientConfig::new(client2_addr, server_addr, 2, 2);
             assert!(manager.async_init_client(client_config).await.is_ok());
+            assert!(manager.async_get_client_connections().await.is_empty());
 
             let mut sent_packets = 0;
             let mut recv_packets = 0;
@@ -2655,6 +2702,7 @@ mod tests {
         assert!(send_results.iter().all(|r| r.is_ok()));
         let client_config = ClientConfig::new(client_addr, server_addr, 2, 2);
         let client = manager.async_init_client(client_config).await;
+        assert!(manager.async_get_client_connections().await.is_empty());
         println!("client1: {:#?}", client);
 
         assert!(client.is_ok());
@@ -2775,6 +2823,17 @@ mod tests {
             assert!(receive_results.iter().all(|r| r.is_ok()));
             let server_config = ServerConfig::new_with_max_clients(server_addr, 2, 2, 2);
             assert!(m.async_init_server(server_config).await.is_ok());
+            let client_connections = m.async_get_client_connections().await;
+            assert_eq!(client_connections.len(), 2);
+            let client1_is_first = client_connections[0].0 == client_addr.clone() && client_connections[0].1 == 0u32
+                || client_connections[1].0 == client_addr.clone() && client_connections[1].1 == 0u32;
+            if client1_is_first {
+                assert!(client_connections.contains(&(client_addr.to_string(), 0u32)));
+                assert!(client_connections.contains(&(client2_addr.to_string(), 1u32)));
+            } else {
+                assert!(client_connections.contains(&(client_addr.to_string(), 1u32)));
+                assert!(client_connections.contains(&(client2_addr.to_string(), 0u32)));
+            }
 
             let mut sent_packets = 0;
             let mut recv_packets = 0;
@@ -2976,6 +3035,7 @@ mod tests {
             assert!(send_results.iter().all(|r| r.is_ok()));
             let client_config = ClientConfig::new(client2_addr, server_addr, 2, 2);
             assert!(manager.async_init_client(client_config).await.is_ok());
+            assert!(manager.async_get_client_connections().await.is_empty());
 
             let mut sent_packets = 0;
             let mut recv_packets = 0;
@@ -3080,6 +3140,7 @@ mod tests {
         assert!(send_results.iter().all(|r| r.is_ok()));
         let client_config = ClientConfig::new(client_addr, server_addr, 2, 2);
         let client = manager.async_init_client(client_config).await;
+        assert!(manager.async_get_client_connections().await.is_empty());
         println!("client1: {:#?}", client);
 
         assert!(client.is_ok());
