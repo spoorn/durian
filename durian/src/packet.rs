@@ -15,7 +15,7 @@ use log::{debug, error, trace, warn};
 use quinn::{Connection, Endpoint, ReadError, RecvStream, SendStream, VarInt, WriteError};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::runtime::Runtime;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::Receiver;
 use tokio::task::JoinHandle;
@@ -357,7 +357,7 @@ impl ServerConfig {
             num_receive_streams,
             num_send_streams,
             keep_alive_interval: None,
-            idle_timeout: None,
+            idle_timeout: Some(Duration::from_secs(60)),
             alpn_protocols: None,
         }
     }
@@ -369,8 +369,8 @@ impl ServerConfig {
     }
 
     /// Set the max idle timeout
-    pub fn with_idle_timeout(&mut self, duration: Duration) -> &mut Self {
-        self.idle_timeout = Some(duration);
+    pub fn with_idle_timeout(&mut self, duration: Option<Duration>) -> &mut Self {
+        self.idle_timeout = duration;
         self
     }
 
@@ -629,7 +629,7 @@ impl PacketManager {
         if server_config.total_expected_clients.is_none()
             || server_config.total_expected_clients.unwrap() > server_config.wait_for_clients
         {
-            let mut client_id = server_config.wait_for_clients;
+            let client_id = Arc::new(Mutex::new(server_config.wait_for_clients));
 
             // TODO: save this value
             for i in 0..server_config.max_concurrent_accepts {
@@ -640,7 +640,8 @@ impl PacketManager {
                 let arc_rx = new_rxs.clone();
                 let arc_runtime = Arc::clone(runtime);
                 let endpoint = Arc::clone(&endpoint);
-
+                let client_id_clone = Arc::clone(&client_id);
+                
                 let accept_client_task = async move {
                     match server_config.total_expected_clients {
                         None => loop {
@@ -666,9 +667,9 @@ impl PacketManager {
                             )?;
                             arc_rx.write().await.push((addr.to_string(), res));
                             arc_send_streams.write().await.push((addr.to_string(), send_streams));
-                            let mut client_connections = client_connections.write().await;
-                            client_connections.insert(addr.to_string(), (client_id, conn));
-                            client_id += 1;
+                            let mut id = client_id_clone.lock().await;
+                            client_connections.write().await.insert(addr.to_string(), (*id, conn));
+                            *id += 1;
                         },
                         Some(expected_num_clients) => {
                             for i in 0..(expected_num_clients - server_config.wait_for_clients) {
@@ -694,9 +695,9 @@ impl PacketManager {
                                 )?;
                                 arc_rx.write().await.push((addr.to_string(), res));
                                 arc_send_streams.write().await.push((addr.to_string(), send_streams));
-                                let mut client_connections = client_connections.write().await;
-                                client_connections.insert(addr.to_string(), (client_id, conn));
-                                client_id += 1;
+                                let mut id = client_id_clone.lock().await;
+                                client_connections.write().await.insert(addr.to_string(), (*id, conn));
+                                *id += 1;
                             }
                         }
                     }
@@ -1849,11 +1850,11 @@ impl PacketManager {
 mod tests {
     use std::time::Duration;
 
+    use durian_macros::bincode_packet;
     use tokio::sync::mpsc;
     use tokio::time::sleep;
 
     use durian::packet::PacketManager;
-    use durian_macros::{bincode_packet};
 
     use crate as durian;
     use crate::{ClientConfig, ErrorType, register_receive, register_send, ServerConfig};

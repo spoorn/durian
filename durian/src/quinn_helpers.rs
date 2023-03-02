@@ -96,7 +96,7 @@ fn configure_client(
     if let Some(idle_timeout) = idle_timeout {
         transport_config.max_idle_timeout(Some(IdleTimeout::try_from(idle_timeout)?));
     } else {
-        transport_config.max_idle_timeout(Some(IdleTimeout::try_from(Duration::from_secs(60))?));
+        transport_config.max_idle_timeout(None);
     }
     client_config.transport_config(Arc::new(transport_config));
 
@@ -131,7 +131,7 @@ fn configure_server(
     if let Some(idle_timeout) = idle_timeout {
         transport_config.max_idle_timeout(Some(IdleTimeout::try_from(idle_timeout)?));
     } else {
-        transport_config.max_idle_timeout(Some(IdleTimeout::try_from(Duration::from_secs(60))?));
+        transport_config.max_idle_timeout(None);
     }
 
     Ok((server_config, cert_der))
