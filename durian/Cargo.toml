@@ -1,6 +1,6 @@
 [package]
 name = "durian"
-version = "0.3.1"
+version = "0.3.2"
 authors = ["Michael Trinh <spookump@gmail.com>"]
 categories = ["accessibility", "game-development", "network-programming", "games"]
 keywords = ["durian", "macros", "netcode", "packets", "gamedev"]
