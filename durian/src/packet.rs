@@ -269,8 +269,8 @@ pub struct ServerConfig {
     /// the connection to be preserved. Must be set lower than the idle_timeout of both peers to be effective.
     pub keep_alive_interval: Option<Duration>,
     /// Maximum duration of inactivity to accept before timing out the connection.
-    /// The true idle timeout is the minimum of this and the peer's own max idle timeout. Defaults to None which
-    /// represents an infinite timeout.
+    /// The true idle timeout is the minimum of this and the peer's own max idle timeout. Defaults to 60 seconds.
+    /// None represents an infinite timeout.
     ///
     /// __WARNING: If a peer or its network path malfunctions or acts maliciously, an infinite idle timeout can result
     /// in permanently hung futures!__
@@ -368,7 +368,7 @@ impl ServerConfig {
         self
     }
 
-    /// Set the idle timeout
+    /// Set the max idle timeout
     pub fn with_idle_timeout(&mut self, duration: Duration) -> &mut Self {
         self.idle_timeout = Some(duration);
         self

@@ -95,6 +95,8 @@ fn configure_client(
     transport_config.keep_alive_interval(keep_alive_interval);
     if let Some(idle_timeout) = idle_timeout {
         transport_config.max_idle_timeout(Some(IdleTimeout::try_from(idle_timeout)?));
+    } else {
+        transport_config.max_idle_timeout(Some(IdleTimeout::try_from(Duration::from_secs(60))?));
     }
     client_config.transport_config(Arc::new(transport_config));
 
@@ -128,6 +130,8 @@ fn configure_server(
     let transport_config = Arc::get_mut(&mut server_config.transport).unwrap().keep_alive_interval(keep_alive_interval);
     if let Some(idle_timeout) = idle_timeout {
         transport_config.max_idle_timeout(Some(IdleTimeout::try_from(idle_timeout)?));
+    } else {
+        transport_config.max_idle_timeout(Some(IdleTimeout::try_from(Duration::from_secs(60))?));
     }
 
     Ok((server_config, cert_der))
