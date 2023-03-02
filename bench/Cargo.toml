@@ -10,7 +10,7 @@ name = "bench"
 
 [dependencies]
 durian = { path = "../durian" }
-tokio = { version = "1.21.2", features = ["full"] }
+tokio = { version = "1.26.0", features = ["full"] }
 
 [dev-dependencies]
 criterion = "0.4"
