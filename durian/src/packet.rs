@@ -185,8 +185,12 @@ pub struct ClientConfig {
     /// the connection to be preserved. Must be set lower than the idle_timeout of both peers to be effective.
     pub keep_alive_interval: Option<Duration>,
     /// Maximum duration of inactivity to accept before timing out the connection.
-    /// The true idle timeout is the minimum of this and the peer's own max idle timeout. Defaults to None which
-    /// represents an infinite timeout.
+    /// The true idle timeout is the minimum of this and the peer's own max idle timeout. Defaults to 60 seconds.
+    /// None represents an infinite timeout.
+    ///
+    /// __IMPORTANT: In the case of clients disconnecting abruptly, i.e. your application cannot call
+    /// [`PacketManager::close_connection()`] or [`PacketManager::finish_connection()`] gracefully, the *true idle timeout* will help to remove
+    /// disconnected clients from the connection queue, thus allowing them to reconnect after that timeout frame.__
     ///
     /// __WARNING: If a peer or its network path malfunctions or acts maliciously, an infinite idle timeout can result
     /// in permanently hung futures!__
@@ -214,7 +218,7 @@ impl ClientConfig {
             num_receive_streams,
             num_send_streams,
             keep_alive_interval: None,
-            idle_timeout: None,
+            idle_timeout: Some(Duration::from_secs(60)),
             alpn_protocols: None,
         }
     }
@@ -272,6 +276,10 @@ pub struct ServerConfig {
     /// The true idle timeout is the minimum of this and the peer's own max idle timeout. Defaults to 60 seconds.
     /// None represents an infinite timeout.
     ///
+    /// __IMPORTANT: In the case of clients disconnecting abruptly, i.e. your application cannot call
+    /// [`PacketManager::close_connection()`] or [`PacketManager::finish_connection()`] gracefully, the *true idle timeout* will help to remove
+    /// disconnected clients from the connection queue, thus allowing them to reconnect after that timeout frame.__
+    ///
     /// __WARNING: If a peer or its network path malfunctions or acts maliciously, an infinite idle timeout can result
     /// in permanently hung futures!__
     pub idle_timeout: Option<Duration>,
@@ -316,7 +324,7 @@ impl ServerConfig {
             num_receive_streams,
             num_send_streams,
             keep_alive_interval: None,
-            idle_timeout: None,
+            idle_timeout: Some(Duration::from_secs(60)),
             alpn_protocols: None,
         }
     }
@@ -336,7 +344,7 @@ impl ServerConfig {
             num_receive_streams,
             num_send_streams,
             keep_alive_interval: None,
-            idle_timeout: None,
+            idle_timeout: Some(Duration::from_secs(60)),
             alpn_protocols: None,
         }
     }
@@ -1343,6 +1351,7 @@ impl PacketManager {
                                 .await;
 
                         if let Err(e) = sent {
+                            warn!("Ran into error during broadcast(): {}", e);
                             match e.error_type {
                                 ErrorType::Unexpected => {
                                     err = Some(e);
@@ -1393,6 +1402,7 @@ impl PacketManager {
             let sent = PacketManager::async_send_helper::<T>(&packet, addr, &self.send_packets, send_streams).await;
 
             if let Err(e) = sent {
+                warn!("Ran into error during async_broadcast(): {}", e);
                 match e.error_type {
                     ErrorType::Unexpected => {
                         err = Some(e);
@@ -1440,10 +1450,16 @@ impl PacketManager {
             None => {
                 panic!("PacketManager does not have a runtime instance associated with it.  Did you mean to call async_send()?");
             }
-            Some(runtime) => runtime.block_on({
-                let first = self.send_streams.first().unwrap();
-                PacketManager::async_send_helper::<T>(&packet, first.0, &self.send_packets, first.1)
-            }),
+            Some(runtime) => {
+                let res = runtime.block_on({
+                    let first = self.send_streams.first().unwrap();
+                    PacketManager::async_send_helper::<T>(&packet, first.0, &self.send_packets, first.1)
+                });
+                if let Err(e) = &res {
+                    warn!("Ran into error during async_send(): {}", e);
+                }
+                res
+            },
         }
     }
 
@@ -1461,7 +1477,11 @@ impl PacketManager {
         self.async_validate_for_send::<T>(false).await?;
         self.async_update_new_senders().await;
         let first = self.send_streams.first().unwrap();
-        PacketManager::async_send_helper::<T>(&packet, first.0, &self.send_packets, first.1).await
+        let res = PacketManager::async_send_helper::<T>(&packet, first.0, &self.send_packets, first.1).await;
+        if let Err(e) = &res {
+            warn!("Ran into error during async_send(): {}", e);
+        }
+        res
     }
 
     /// Send a Packet to a specified destination address.
@@ -1497,14 +1517,17 @@ impl PacketManager {
 
                 match res {
                     Ok(_) => Ok(()),
-                    Err(e) => match e.error_type {
-                        ErrorType::Unexpected => Err(e),
-                        ErrorType::Disconnected => {
-                            let addr_clone = addr.clone();
-                            warn!("Send stream for addr={} disconnected.  Removing it from the send queue and returning error.", addr);
-                            self.close_connection(addr)
-                                .unwrap_or_else(|_| panic!("Could not close connection for addr={}", addr_clone));
-                            Err(e)
+                    Err(e) => {
+                        warn!("Ran into error during send_to(): {}", e);
+                        match e.error_type {
+                            ErrorType::Unexpected => Err(e),
+                            ErrorType::Disconnected => {
+                                let addr_clone = addr.clone();
+                                warn!("Send stream for addr={} disconnected.  Removing it from the send queue and returning error.", addr);
+                                self.close_connection(addr)
+                                    .unwrap_or_else(|_| panic!("Could not close connection for addr={}", addr_clone));
+                                Err(e)
+                            }
                         }
                     },
                 }
@@ -1539,6 +1562,7 @@ impl PacketManager {
         match res {
             Ok(_) => Ok(()),
             Err(e) => {
+                warn!("Ran into error during async_send_to(): {}", e);
                 match e.error_type {
                     ErrorType::Unexpected => Err(e),
                     ErrorType::Disconnected => {
