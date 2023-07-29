@@ -1,6 +1,9 @@
 use durian::bytes::Bytes;
 use durian::serde::{Deserialize, Serialize};
-use durian::{bincode_packet, BinPacket, ClientConfig, Packet, PacketBuilder, PacketManager, ServerConfig, UnitPacket};
+use durian::{
+    bincode_packet, BinPacket, ClientConfig, Packet, PacketBuilder, PacketManager, ServerConfig,
+    UnitPacket,
+};
 use std::error::Error;
 
 #[bincode_packet]
@@ -75,7 +78,9 @@ pub fn setup(num_clients: u32, start_port: u32) -> (Vec<PacketManager>, PacketMa
         let mut client_manager = PacketManager::new();
         // Register `receive` and `send` packets.
         // Note: these must be in the same order for opposite channels as the server.
-        client_manager.register_receive_packet::<OtherPosition>(OtherPositionPacketBuilder).unwrap();
+        client_manager
+            .register_receive_packet::<OtherPosition>(OtherPositionPacketBuilder)
+            .unwrap();
         client_manager.register_receive_packet::<ServerAck>(ServerAckPacketBuilder).unwrap();
         client_manager.register_send_packet::<Position>().unwrap();
         client_manager.register_send_packet::<ClientAck>().unwrap();
@@ -92,7 +97,10 @@ pub fn setup(num_clients: u32, start_port: u32) -> (Vec<PacketManager>, PacketMa
     (client_managers, server_manager)
 }
 
-pub fn sync_example_multiclient_server(client_managers: &mut [PacketManager], server_manager: &mut PacketManager) {
+pub fn sync_example_multiclient_server(
+    client_managers: &mut [PacketManager],
+    server_manager: &mut PacketManager,
+) {
     let server_addr = "127.0.0.1:5000";
 
     // broadcast packets to all recipients, and receive all packets from sender
@@ -107,7 +115,9 @@ pub fn sync_example_multiclient_server(client_managers: &mut [PacketManager], se
         let _other_position_packets = loop {
             // received_all() returns a vector of packets received from each sender address
             // The boolean flag is to set whether it's a blocking call or not
-            let mut queue = client_manager.received_all::<OtherPosition, OtherPositionPacketBuilder>(false).unwrap();
+            let mut queue = client_manager
+                .received_all::<OtherPosition, OtherPositionPacketBuilder>(false)
+                .unwrap();
             // In this case, there's only one sender: the server
             let queue_packets = queue.pop().unwrap();
             if queue_packets.0 == server_addr {
@@ -117,7 +127,8 @@ pub fn sync_example_multiclient_server(client_managers: &mut [PacketManager], se
             }
         };
         let _server_ack_packets = loop {
-            let mut queue = client_manager.received_all::<ServerAck, ServerAckPacketBuilder>(false).unwrap();
+            let mut queue =
+                client_manager.received_all::<ServerAck, ServerAckPacketBuilder>(false).unwrap();
             let queue_packets = queue.pop().unwrap();
             if queue_packets.0 == server_addr {
                 if let Some(packets) = queue_packets.1 {
@@ -135,7 +146,10 @@ pub fn sync_example_multiclient_server(client_managers: &mut [PacketManager], se
     server_manager.received_all::<ClientAck, ClientAckPacketBuilder>(true).unwrap();
 }
 
-pub fn sync_example_single_client_server(client_manager: &mut PacketManager, server_manager: &mut PacketManager) {
+pub fn sync_example_single_client_server(
+    client_manager: &mut PacketManager,
+    server_manager: &mut PacketManager,
+) {
     let client_addr = "127.0.0.1:5001";
     let server_addr = "127.0.0.1:5000";
 
@@ -151,7 +165,9 @@ pub fn sync_example_single_client_server(client_manager: &mut PacketManager, ser
     let _other_position_packets = loop {
         // received_all() returns a vector of packets received from each sender address
         // The boolean flag is to set whether it's a blocking call or not
-        let mut queue = client_manager.received_all::<OtherPosition, OtherPositionPacketBuilder>(false).unwrap();
+        let mut queue = client_manager
+            .received_all::<OtherPosition, OtherPositionPacketBuilder>(false)
+            .unwrap();
         // In this case, there's only one sender: the server
         let queue_packets = queue.pop().unwrap();
         if queue_packets.0 == server_addr {
@@ -162,7 +178,8 @@ pub fn sync_example_single_client_server(client_manager: &mut PacketManager, ser
     };
     //println!("{:?}", other_position_packets);
     let _server_ack_packets = loop {
-        let mut queue = client_manager.received_all::<ServerAck, ServerAckPacketBuilder>(false).unwrap();
+        let mut queue =
+            client_manager.received_all::<ServerAck, ServerAckPacketBuilder>(false).unwrap();
         let queue_packets = queue.pop().unwrap();
         if queue_packets.0 == server_addr {
             if let Some(packets) = queue_packets.1 {
@@ -234,8 +251,10 @@ pub async fn async_sync_example() {
     let _other_position_packets = loop {
         // received_all() returns a vector of packets received from each sender address
         // The boolean flag is to set whether it's a blocking call or not
-        let mut queue =
-            client_manager.async_received_all::<OtherPosition, OtherPositionPacketBuilder>(false).await.unwrap();
+        let mut queue = client_manager
+            .async_received_all::<OtherPosition, OtherPositionPacketBuilder>(false)
+            .await
+            .unwrap();
         // In this case, there's only one sender: the server
         let queue_packets = queue.pop().unwrap();
         if queue_packets.0 == server_addr {
@@ -246,7 +265,10 @@ pub async fn async_sync_example() {
     };
     //println!("{:?}", other_position_packets);
     let _server_ack_packets = loop {
-        let mut queue = client_manager.async_received_all::<ServerAck, ServerAckPacketBuilder>(false).await.unwrap();
+        let mut queue = client_manager
+            .async_received_all::<ServerAck, ServerAckPacketBuilder>(false)
+            .await
+            .unwrap();
         let queue_packets = queue.pop().unwrap();
         if queue_packets.0 == server_addr {
             if let Some(packets) = queue_packets.1 {

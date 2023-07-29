@@ -142,8 +142,8 @@
 //!     // Register send and receive packets
 //!     // Using macros
 //!     let receive_results = register_receive!(
-//!         manager, 
-//!         (Position, PositionPacketBuilder), 
+//!         manager,
+//!         (Position, PositionPacketBuilder),
 //!         (ServerAck, ServerAckPacketBuilder)
 //!     );
 //!     let send_results = register_send!(manager, ClientAck, InputMovement);
@@ -173,8 +173,8 @@
 //!
 //!     // Register send and receive packets
 //!     let server_receive_results = register_receive!(
-//!         server_manager, 
-//!         (ClientAck, ClientAckPacketBuilder), 
+//!         server_manager,
+//!         (ClientAck, ClientAckPacketBuilder),
 //!         (InputMovement, InputMovementPacketBuilder)
 //!     );
 //!     let server_send_results = register_send!(server_manager, Position, ServerAck);

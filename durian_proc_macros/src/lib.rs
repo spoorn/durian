@@ -85,17 +85,17 @@ pub fn bincode_packet(_attr: TokenStream, tokens: TokenStream) -> TokenStream {
                         #[serde(crate = "durian::serde")]
                         #input
                     }
-                        .into();
+                    .into();
                 }
                 Fields::Unit =>
-                    {
-                        #[allow(clippy::needless_return)]
-                        return quote! {
+                {
+                    #[allow(clippy::needless_return)]
+                    return quote! {
                         #[derive(durian::UnitPacket)]
                         #input
                     }
-                            .into()
-                    }
+                    .into()
+                }
                 _ => panic!(
                     "Only Structs with Named fields and Empty Unit structs can be annotated with #[bincode_packet]"
                 ),
@@ -140,7 +140,8 @@ pub fn bincode_packet(_attr: TokenStream, tokens: TokenStream) -> TokenStream {
 pub fn bin_packet(tokens: TokenStream) -> TokenStream {
     let input = parse_macro_input!(tokens as DeriveInput);
     let name = input.ident;
-    let packet_builder_name = Ident::new((name.to_string() + "PacketBuilder").as_str(), Span::call_site());
+    let packet_builder_name =
+        Ident::new((name.to_string() + "PacketBuilder").as_str(), Span::call_site());
 
     #[allow(clippy::needless_return)]
     return quote! {
@@ -159,7 +160,7 @@ pub fn bin_packet(tokens: TokenStream) -> TokenStream {
             }
         }
     }
-        .into();
+    .into();
 }
 
 /// Same as [`BinPacket`] but for empty or Unit structs
@@ -194,7 +195,8 @@ pub fn unit_packet(tokens: TokenStream) -> TokenStream {
     let input = parse_macro_input!(tokens as DeriveInput);
     let name = input.ident;
     let name_str = format!("\"{}\"", name);
-    let packet_builder_name = Ident::new((name.to_string() + "PacketBuilder").as_str(), Span::call_site());
+    let packet_builder_name =
+        Ident::new((name.to_string() + "PacketBuilder").as_str(), Span::call_site());
 
     #[allow(clippy::needless_return)]
     return quote! {
@@ -213,7 +215,7 @@ pub fn unit_packet(tokens: TokenStream) -> TokenStream {
             }
         }
     }
-        .into();
+    .into();
 }
 
 /// Convenience derive macro that implements [`Deref`] and [`DerefMut`] for a struct that contains a
@@ -266,10 +268,7 @@ pub fn deref_packet_manager(tokens: TokenStream) -> TokenStream {
     let name = input.ident;
 
     match input.data {
-        Data::Struct(DataStruct {
-                         fields: Fields::Named(fields),
-                         ..
-                     }) => {
+        Data::Struct(DataStruct { fields: Fields::Named(fields), .. }) => {
             let mut has_manager = false;
             for field in fields.named.iter() {
                 if *field.ident.as_ref().unwrap() == *"manager" {
@@ -301,7 +300,7 @@ pub fn deref_packet_manager(tokens: TokenStream) -> TokenStream {
             }
         }
     }
-        .into();
+    .into();
 }
 
 /// Implements a `new()` function for a struct that contains only a `message: String` field
@@ -313,10 +312,7 @@ pub fn error_only_message(tokens: TokenStream) -> TokenStream {
     let name = input.ident;
 
     let fields_punct = match input.data {
-        Data::Struct(DataStruct {
-                         fields: Fields::Named(fields),
-                         ..
-                     }) => fields.named,
+        Data::Struct(DataStruct { fields: Fields::Named(fields), .. }) => fields.named,
         _ => panic!("Only structs with named fields can be annotated with ErrorMessageNew"),
     };
 

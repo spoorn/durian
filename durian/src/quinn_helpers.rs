@@ -41,7 +41,8 @@ pub fn make_client_endpoint(
     idle_timeout: Option<Duration>,
     alpn_protocols: Option<Vec<Vec<u8>>>,
 ) -> Result<Endpoint, Box<dyn Error>> {
-    let client_cfg = configure_client(server_certs, keep_alive_interval, idle_timeout, alpn_protocols)?;
+    let client_cfg =
+        configure_client(server_certs, keep_alive_interval, idle_timeout, alpn_protocols)?;
     let mut endpoint = Endpoint::client(bind_addr)?;
     endpoint.set_default_client_config(client_cfg);
     Ok(endpoint)
@@ -61,7 +62,8 @@ pub fn make_server_endpoint(
     idle_timeout: Option<Duration>,
     alpn_protocols: Option<Vec<Vec<u8>>>,
 ) -> Result<(Endpoint, Vec<u8>), Box<dyn Error>> {
-    let (server_config, server_cert) = configure_server(keep_alive_interval, idle_timeout, alpn_protocols)?;
+    let (server_config, server_cert) =
+        configure_server(keep_alive_interval, idle_timeout, alpn_protocols)?;
     let endpoint = Endpoint::server(server_config, bind_addr)?;
     Ok((endpoint, server_cert))
 }
@@ -127,7 +129,9 @@ fn configure_server(
         server_crypto.alpn_protocols = alpn_protocols;
     }
     let mut server_config = ServerConfig::with_crypto(Arc::new(server_crypto));
-    let transport_config = Arc::get_mut(&mut server_config.transport).unwrap().keep_alive_interval(keep_alive_interval);
+    let transport_config = Arc::get_mut(&mut server_config.transport)
+        .unwrap()
+        .keep_alive_interval(keep_alive_interval);
     if let Some(idle_timeout) = idle_timeout {
         transport_config.max_idle_timeout(Some(IdleTimeout::try_from(idle_timeout)?));
     } else {
