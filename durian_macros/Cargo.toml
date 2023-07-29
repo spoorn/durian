@@ -17,7 +17,7 @@ readme = "README.md"
 name = "durian_macros"
 
 [dependencies]
-durian_proc_macros = "0.1"
+durian_proc_macros.workspace = true
 
 [dev-dependencies]
-durian = { path = "../durian" }
+durian.workspace = true

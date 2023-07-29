@@ -6,3 +6,13 @@ members = [
     "example",
     "bench"
 ]
+default-members = ["durian"]
+
+[workspace.dependencies]
+bincode = "1.3.3"
+serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1.26.0", features = ["full"] }
+# For easily using local deps for local development
+durian = { path = "durian", version = "0.3" }
+durian_macros = { path = "durian_macros", version = "0.3" }
+durian_proc_macros = { path = "durian_proc_macros", version = "0.1" }
