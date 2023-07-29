@@ -13,7 +13,7 @@ durian.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
-criterion = "0.4"
+criterion = "0.5"
 
 [[bench]]
 name = "benchmark"

@@ -17,27 +17,27 @@ readme = "README.md"
 name = "durian"
 
 [dependencies]
-bimap = "0.6.2"
+bimap = "0.6.3"
 bytes = "1.4.0"
 derive_more = "0.99.17"
-hashbrown = "0.13.2"
-rcgen = "0.10.0"
-rustls = { version = "0.20.8", default-features = false, features = ["quic", "dangerous_configuration"] }
-thiserror = "1.0.38"
+hashbrown = "0.14.0"
+rcgen = "0.11.1"
+rustls = { version = "0.21.5", default-features = false, features = ["quic", "dangerous_configuration"] }
+thiserror = "1.0.44"
 tokio-test = "0.4.2"
 # Read more on QUIC at https://http3-explained.haxx.se/
-quinn = "0.9.3"
-dashmap = "5.4.0"
-log = "0.4.17"
+quinn = "0.10.1"
+dashmap = "5.5.0"
+log = "0.4.19"
 durian_macros.workspace = true
-indexmap = "1.9.2"
-num_cpus = "1.15.0"
+indexmap = "2.0.0"
+num_cpus = "1.16.0"
 bincode.workspace = true
 serde.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
-test-log = "0.2.11"
+test-log = "0.2.12"
 env_logger = "0.10"
 tracing = {version = "0.1", default-features = false}
 tracing-subscriber = {version = "0.3", default-features = false, features = ["env-filter", "fmt"]}

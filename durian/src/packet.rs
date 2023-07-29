@@ -23,6 +23,7 @@ use tokio::task::JoinHandle;
 use crate::quinn_helpers::{make_client_endpoint, make_server_endpoint};
 use crate::{CloseError, ConnectionError, ErrorType, ReceiveError, SendError};
 
+// Sent at the end of frames
 const FRAME_BOUNDARY: &[u8] = b"AAAAAA031320050421";
 
 /// Packet trait that allows a struct to be sent through [`PacketManager`], for serializing
@@ -925,6 +926,7 @@ impl PacketManager {
                                                 "Transmitting received bytes of length {}",
                                                 frame.len()
                                             );
+                                            // Should never have FRAME_BOUNDARY at this point
                                             tx.send(frame).await.unwrap();
                                         }
                                     }
@@ -938,15 +940,29 @@ impl PacketManager {
                                                 "Transmitting reconstructed received bytes of length {}",
                                                 reconstructed_frame.len()
                                             );
-                                            tx.send(reconstructed_frame).await.unwrap();
+                                            // Remove boundary if at beginning of reconstructed frame
+                                            if reconstructed_frame.starts_with(FRAME_BOUNDARY) {
+                                                tx.send(reconstructed_frame.slice(
+                                                    FRAME_BOUNDARY.len() - 1
+                                                        ..reconstructed_frame.len(),
+                                                ))
+                                                .await
+                                                .unwrap();
+                                            } else {
+                                                tx.send(reconstructed_frame).await.unwrap();
+                                            }
                                         }
                                     }
                                 }
                                 offset = i + FRAME_BOUNDARY.len();
                             }
 
+                            // We got a partial chunk if there were no boundaries found, so the chunk couldn't be
+                            // split to be sent to tx, or there is a leftover slice at the end that doesn't have the
+                            // ending frame signaling end of a send()
                             if boundaries.is_empty()
-                                || (offset + FRAME_BOUNDARY.len() != bytes.len() - 1)
+                                || (offset + FRAME_BOUNDARY.len() != bytes.len() - 1
+                                    || !bytes.ends_with(FRAME_BOUNDARY))
                             {
                                 let prefix_part = bytes.slice(offset..bytes.len());
                                 match partial_chunk.take() {
@@ -2035,7 +2051,8 @@ impl PacketManager {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use hashbrown::HashMap;
+    use std::time::{Duration, SystemTime};
 
     use durian_macros::bincode_packet;
     use tokio::sync::mpsc;
@@ -2047,20 +2064,32 @@ mod tests {
     use crate::{register_receive, register_send, ClientConfig, ErrorType, ServerConfig};
 
     #[bincode_packet]
-    #[derive(Debug, PartialEq, Eq)]
+    #[derive(Debug, PartialEq, Eq, Hash)]
     struct Test {
         id: i32,
     }
 
-    #[bincode_packet]
-    #[derive(Debug, PartialEq, Eq)]
+    #[derive(durian::serde::Serialize, durian::serde::Deserialize)]
+    #[serde(crate = "durian::serde")]
+    #[derive(Debug, PartialEq, Eq, Hash)]
     struct Other {
         name: String,
         id: i32,
     }
+    impl durian::Packet for Other {
+        fn as_bytes(&self) -> durian::bytes::Bytes {
+            durian::bytes::Bytes::from(durian::bincode::serialize(self).unwrap())
+        }
+    }
+    #[derive(Copy, Clone)]
+    pub struct OtherPacketBuilder;
+    impl durian::PacketBuilder<Other> for OtherPacketBuilder {
+        fn read(&self, bytes: durian::bytes::Bytes) -> Result<Other, Box<dyn std::error::Error>> {
+            Ok(durian::bincode::deserialize(bytes.as_ref()).unwrap())
+        }
+    }
 
     // TODO: Test sync versions
-    // TODO: flaky, need to validate entire packet sequence like tests below or race condition can happen and validations fail
     #[tokio::test]
     async fn receive_packet_e2e_async() {
         let mut manager = PacketManager::new_for_async();
@@ -2082,37 +2111,61 @@ mod tests {
             assert_eq!(client_connections.len(), 1);
             assert_eq!(client_connections[0], (client_addr.to_string(), 0u32));
 
-            for _ in 0..100 {
-                assert!(m.async_send::<Test>(Test { id: 5 }).await.is_ok());
-                assert!(m.async_send::<Test>(Test { id: 8 }).await.is_ok());
-                assert!(m
-                    .async_send::<Other>(Other { name: "spoorn".to_string(), id: 4 })
-                    .await
-                    .is_ok());
-                assert!(m
-                    .async_send::<Other>(Other { name: "kiko".to_string(), id: 6 })
-                    .await
-                    .is_ok());
+            let mut packets_to_send = 0;
+            let mut test_packets = HashMap::new();
+            let mut other_packets = HashMap::new();
+            let start_time = SystemTime::now();
+            while start_time.elapsed().unwrap() < Duration::from_secs(3) {
+                if packets_to_send < 50 {
+                    assert!(m.async_send::<Test>(Test { id: 5 }).await.is_ok());
+                    assert!(m.async_send::<Test>(Test { id: 8 }).await.is_ok());
+                    assert!(m
+                        .async_send::<Other>(Other { name: "spoorn".to_string(), id: 4 })
+                        .await
+                        .is_ok());
+                    assert!(m
+                        .async_send::<Other>(Other { name: "kiko".to_string(), id: 6 })
+                        .await
+                        .is_ok());
+                    packets_to_send += 1;
+                }
 
-                let test_res = m.async_received::<Test, TestPacketBuilder>(true).await;
+                let test_res = m.async_received::<Test, TestPacketBuilder>(false).await;
                 assert!(test_res.is_ok());
-                let unwrapped = test_res.unwrap();
-                assert!(unwrapped.is_some());
-                assert_eq!(unwrapped.unwrap(), vec![Test { id: 6 }, Test { id: 9 }]);
-                let other_res = m.async_received::<Other, OtherPacketBuilder>(true).await;
+                if let Some(packets) = test_res.unwrap().take() {
+                    packets.into_iter().for_each(|packet| {
+                        *test_packets.entry(packet).or_insert_with(|| 0) += 1;
+                    });
+                }
+                let other_res = m.async_received::<Other, OtherPacketBuilder>(false).await;
                 assert!(other_res.is_ok());
-                let unwrapped = other_res.unwrap();
-                assert!(unwrapped.is_some());
-                assert_eq!(
-                    unwrapped.unwrap(),
-                    vec![
-                        Other { name: "mango".to_string(), id: 1 },
-                        Other { name: "luna".to_string(), id: 3 },
-                    ]
-                );
+                if let Some(packets) = other_res.unwrap().take() {
+                    packets.into_iter().for_each(|packet| {
+                        *other_packets.entry(packet).or_insert_with(|| 0) += 1;
+                    });
+                }
+
+                // Early terminate if we already found all expected early
+                if packets_to_send >= 50
+                    && (test_packets.values().cloned().collect::<Vec<i32>>().iter().sum::<i32>()
+                        + other_packets.values().cloned().collect::<Vec<i32>>().iter().sum::<i32>())
+                        >= 200
+                {
+                    break;
+                }
             }
 
+            assert!(matches!(test_packets.get(&Test { id: 6 }), Some(i) if *i == 50));
+            assert!(matches!(test_packets.get(&Test { id: 9 }), Some(i) if *i == 50));
+            assert!(
+                matches!(other_packets.get(&Other { name: "mango".to_string(), id: 1 }), Some(i) if *i == 50)
+            );
+            assert!(
+                matches!(other_packets.get(&Other { name: "luna".to_string(), id: 3 }), Some(i) if *i == 50)
+            );
+
             rx.recv().await;
+
             // loop {
             //     // Have to use tokio's sleep so it can yield to the tokio executor
             //     // https://stackoverflow.com/questions/70798841/why-does-a-tokio-thread-wait-for-a-blocking-thread-before-continuing?rq=1
@@ -2129,39 +2182,61 @@ mod tests {
         let client = manager.async_init_client(client_config).await;
         assert!(manager.async_get_client_connections().await.is_empty());
         println!("{:#?}", client);
-
         assert!(client.is_ok());
 
-        for _ in 0..100 {
+        let mut packets_to_send = 0;
+        let mut test_packets = HashMap::new();
+        let mut other_packets = HashMap::new();
+        let start_time = SystemTime::now();
+        while start_time.elapsed().unwrap() < Duration::from_secs(3) {
             // Send packets
-            assert!(manager.async_send::<Test>(Test { id: 6 }).await.is_ok());
-            assert!(manager.async_send::<Test>(Test { id: 9 }).await.is_ok());
-            assert!(manager
-                .async_send::<Other>(Other { name: "mango".to_string(), id: 1 })
-                .await
-                .is_ok());
-            assert!(manager
-                .async_send::<Other>(Other { name: "luna".to_string(), id: 3 })
-                .await
-                .is_ok());
+            if packets_to_send < 50 {
+                assert!(manager.async_send::<Test>(Test { id: 6 }).await.is_ok());
+                assert!(manager.async_send::<Test>(Test { id: 9 }).await.is_ok());
+                assert!(manager
+                    .async_send::<Other>(Other { name: "mango".to_string(), id: 1 })
+                    .await
+                    .is_ok());
+                assert!(manager
+                    .async_send::<Other>(Other { name: "luna".to_string(), id: 3 })
+                    .await
+                    .is_ok());
+                packets_to_send += 1;
+            }
 
-            let test_res = manager.async_received::<Test, TestPacketBuilder>(true).await;
+            let test_res = manager.async_received::<Test, TestPacketBuilder>(false).await;
             assert!(test_res.is_ok());
-            let unwrapped = test_res.unwrap();
-            assert!(unwrapped.is_some());
-            assert_eq!(unwrapped.unwrap(), vec![Test { id: 5 }, Test { id: 8 }]);
-            let other_res = manager.async_received::<Other, OtherPacketBuilder>(true).await;
+            if let Some(packets) = test_res.unwrap().take() {
+                packets.into_iter().for_each(|packet| {
+                    *test_packets.entry(packet).or_insert_with(|| 0) += 1;
+                });
+            };
+            let other_res = manager.async_received::<Other, OtherPacketBuilder>(false).await;
             assert!(other_res.is_ok());
-            let unwrapped = other_res.unwrap();
-            assert!(unwrapped.is_some());
-            assert_eq!(
-                unwrapped.unwrap(),
-                vec![
-                    Other { name: "spoorn".to_string(), id: 4 },
-                    Other { name: "kiko".to_string(), id: 6 },
-                ]
-            );
+            if let Some(packets) = other_res.unwrap().take() {
+                packets.into_iter().for_each(|packet| {
+                    *other_packets.entry(packet).or_insert_with(|| 0) += 1;
+                });
+            }
+
+            // Early terminate if we already found all expected early
+            if packets_to_send >= 50
+                && (test_packets.values().cloned().collect::<Vec<i32>>().iter().sum::<i32>()
+                    + other_packets.values().cloned().collect::<Vec<i32>>().iter().sum::<i32>())
+                    >= 200
+            {
+                break;
+            }
         }
+
+        assert!(matches!(test_packets.get(&Test { id: 5 }), Some(i) if *i == 50));
+        assert!(matches!(test_packets.get(&Test { id: 8 }), Some(i) if *i == 50));
+        assert!(
+            matches!(other_packets.get(&Other { name: "spoorn".to_string(), id: 4 }), Some(i) if *i == 50)
+        );
+        assert!(
+            matches!(other_packets.get(&Other { name: "kiko".to_string(), id: 6 }), Some(i) if *i == 50)
+        );
 
         tx.send(0).await.unwrap();
         assert!(server.await.is_ok());
@@ -2193,10 +2268,9 @@ mod tests {
             assert!(m.async_init_server(server_config).await.is_ok());
             let client_connections = m.async_get_client_connections().await;
             assert_eq!(client_connections.len(), 2);
-            let client1_is_first = client_connections[0].0 == client_addr.clone()
+            let client1_is_first = client_connections[0].0 == client_addr
                 && client_connections[0].1 == 0u32
-                || client_connections[1].0 == client_addr.clone()
-                    && client_connections[1].1 == 0u32;
+                || client_connections[1].0 == client_addr && client_connections[1].1 == 0u32;
             if client1_is_first {
                 assert!(client_connections.contains(&(client_addr.to_string(), 0u32)));
                 assert!(client_connections.contains(&(client2_addr.to_string(), 1u32)));
@@ -2508,10 +2582,9 @@ mod tests {
             assert!(m.async_init_server(server_config).await.is_ok());
             let client_connections = m.async_get_client_connections().await;
             assert_eq!(client_connections.len(), 2);
-            let client1_is_first = client_connections[0].0 == client_addr.clone()
+            let client1_is_first = client_connections[0].0 == client_addr
                 && client_connections[0].1 == 0u32
-                || client_connections[1].0 == client_addr.clone()
-                    && client_connections[1].1 == 0u32;
+                || client_connections[1].0 == client_addr && client_connections[1].1 == 0u32;
             if client1_is_first {
                 assert!(client_connections.contains(&(client_addr.to_string(), 0u32)));
                 assert!(client_connections.contains(&(client2_addr.to_string(), 1u32)));
@@ -2897,10 +2970,9 @@ mod tests {
             assert!(m.async_init_server(server_config).await.is_ok());
             let client_connections = m.async_get_client_connections().await;
             assert_eq!(client_connections.len(), 2);
-            let client1_is_first = client_connections[0].0 == client_addr.clone()
+            let client1_is_first = client_connections[0].0 == client_addr
                 && client_connections[0].1 == 0u32
-                || client_connections[1].0 == client_addr.clone()
-                    && client_connections[1].1 == 0u32;
+                || client_connections[1].0 == client_addr && client_connections[1].1 == 0u32;
             if client1_is_first {
                 assert!(client_connections.contains(&(client_addr.to_string(), 0u32)));
                 assert!(client_connections.contains(&(client2_addr.to_string(), 1u32)));
