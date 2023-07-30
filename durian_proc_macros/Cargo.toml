@@ -1,6 +1,6 @@
 [package]
 name = "durian_proc_macros"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Michael Trinh <spookump@gmail.com>"]
 categories = ["accessibility", "game-development", "network-programming", "games"]
 keywords = ["durian", "macros", "netcode", "packets", "gamedev"]
