@@ -49,8 +49,13 @@ impl PacketBuilder<Identifier> for IdentifierPacketBuilder {
     }
 }
 
-pub fn setup(num_clients: u32, start_port: u32) -> (Vec<PacketManager>, PacketManager) {
-    let server_addr = "127.0.0.1:5000";
+pub fn setup(
+    server_port: u32,
+    num_clients: u32,
+    start_port: u32,
+) -> (Vec<PacketManager>, PacketManager) {
+    let _ = env_logger::builder().is_test(true).try_init();
+    let server_addr = &format!("127.0.0.1:{}", server_port.to_string());
 
     // Server example
     let mut server_manager = PacketManager::new();
@@ -98,11 +103,10 @@ pub fn setup(num_clients: u32, start_port: u32) -> (Vec<PacketManager>, PacketMa
 }
 
 pub fn sync_example_multiclient_server(
+    server_addr: &str,
     client_managers: &mut [PacketManager],
     server_manager: &mut PacketManager,
 ) {
-    let server_addr = "127.0.0.1:5000";
-
     // broadcast packets to all recipients, and receive all packets from sender
     server_manager.broadcast(OtherPosition { x: 0, y: 1 }).unwrap();
     // Or you can send to a specific recipient via the address
@@ -119,20 +123,22 @@ pub fn sync_example_multiclient_server(
                 .received_all::<OtherPosition, OtherPositionPacketBuilder>(false)
                 .unwrap();
             // In this case, there's only one sender: the server
-            let queue_packets = queue.pop().unwrap();
-            if queue_packets.0 == server_addr {
-                if let Some(packets) = queue_packets.1 {
-                    break packets;
+            if let Some(queue_packets) = queue.pop() {
+                if queue_packets.0 == server_addr {
+                    if let Some(packets) = queue_packets.1 {
+                        break packets;
+                    }
                 }
             }
         };
         let _server_ack_packets = loop {
             let mut queue =
                 client_manager.received_all::<ServerAck, ServerAckPacketBuilder>(false).unwrap();
-            let queue_packets = queue.pop().unwrap();
-            if queue_packets.0 == server_addr {
-                if let Some(packets) = queue_packets.1 {
-                    break packets;
+            if let Some(queue_packets) = queue.pop() {
+                if queue_packets.0 == server_addr {
+                    if let Some(packets) = queue_packets.1 {
+                        break packets;
+                    }
                 }
             }
         };
@@ -147,11 +153,11 @@ pub fn sync_example_multiclient_server(
 }
 
 pub fn sync_example_single_client_server(
+    server_addr: &str,
     client_manager: &mut PacketManager,
     server_manager: &mut PacketManager,
 ) {
     let client_addr = "127.0.0.1:5001";
-    let server_addr = "127.0.0.1:5000";
 
     // Below we show different ways to send/receive packets
 
@@ -169,10 +175,11 @@ pub fn sync_example_single_client_server(
             .received_all::<OtherPosition, OtherPositionPacketBuilder>(false)
             .unwrap();
         // In this case, there's only one sender: the server
-        let queue_packets = queue.pop().unwrap();
-        if queue_packets.0 == server_addr {
-            if let Some(packets) = queue_packets.1 {
-                break packets;
+        if let Some(queue_packets) = queue.pop() {
+            if queue_packets.0 == server_addr {
+                if let Some(packets) = queue_packets.1 {
+                    break packets;
+                }
             }
         }
     };
@@ -180,10 +187,11 @@ pub fn sync_example_single_client_server(
     let _server_ack_packets = loop {
         let mut queue =
             client_manager.received_all::<ServerAck, ServerAckPacketBuilder>(false).unwrap();
-        let queue_packets = queue.pop().unwrap();
-        if queue_packets.0 == server_addr {
-            if let Some(packets) = queue_packets.1 {
-                break packets;
+        if let Some(queue_packets) = queue.pop() {
+            if queue_packets.0 == server_addr {
+                if let Some(packets) = queue_packets.1 {
+                    break packets;
+                }
             }
         }
     };
@@ -256,10 +264,11 @@ pub async fn async_sync_example() {
             .await
             .unwrap();
         // In this case, there's only one sender: the server
-        let queue_packets = queue.pop().unwrap();
-        if queue_packets.0 == server_addr {
-            if let Some(packets) = queue_packets.1 {
-                break packets;
+        if let Some(queue_packets) = queue.pop() {
+            if queue_packets.0 == server_addr {
+                if let Some(packets) = queue_packets.1 {
+                    break packets;
+                }
             }
         }
     };
@@ -269,10 +278,11 @@ pub async fn async_sync_example() {
             .async_received_all::<ServerAck, ServerAckPacketBuilder>(false)
             .await
             .unwrap();
-        let queue_packets = queue.pop().unwrap();
-        if queue_packets.0 == server_addr {
-            if let Some(packets) = queue_packets.1 {
-                break packets;
+        if let Some(queue_packets) = queue.pop() {
+            if queue_packets.0 == server_addr {
+                if let Some(packets) = queue_packets.1 {
+                    break packets;
+                }
             }
         }
     };
