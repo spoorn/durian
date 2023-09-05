@@ -145,23 +145,33 @@ pub trait PacketBuilder<T: Packet> {
 /// ```
 #[derive(Debug)]
 pub struct PacketManager {
+    /// Packet Id <-> Packet TypeId
     receive_packets: BiMap<u32, TypeId>,
+    /// Packet Id <-> Packet TypeId
     send_packets: BiMap<u32, TypeId>,
     recv_packet_builders: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
     // DenseSlotMap for the below so we can iterate fast, while not degrading insert/remove much
-    send_streams: IndexMap<String, HashMap<u32, RwLock<SendStream>>>,
-    rx: IndexMap<String, HashMap<u32, (RwLock<Receiver<Bytes>>, JoinHandle<()>)>>,
-    new_send_streams: Arc<RwLock<Vec<(String, HashMap<u32, RwLock<SendStream>>)>>>,
-    new_rxs: Arc<RwLock<Vec<(String, HashMap<u32, (RwLock<Receiver<Bytes>>, JoinHandle<()>)>)>>>,
+    /// Send streams RemoteId -> Packet Id -> SendStream
+    send_streams: IndexMap<u32, HashMap<u32, RwLock<SendStream>>>,
+    /// Receive channels, to be filled by separate threads
+    /// RemoteId -> PacketId -> (Receiver channel, Thread JoinHandle)
+    rx: IndexMap<u32, HashMap<u32, (RwLock<Receiver<Bytes>>, JoinHandle<()>)>>,
+    /// Track new send streams to be put into the send_streams IndexMap
+    /// This is so new send streams can be created after PacketManager initialization
+    new_send_streams: Arc<RwLock<Vec<(u32, HashMap<u32, RwLock<SendStream>>)>>>,
+    /// Track new receive streams to be put into the rx IndexMap
+    /// This is so new receive streams can be created after PacketManager initialization
+    new_rxs: Arc<RwLock<Vec<(u32, HashMap<u32, (RwLock<Receiver<Bytes>>, JoinHandle<()>)>)>>>,
     // Endpoint and Connection structs moved to the struct fields to prevent closing connections
     // by dropping.
     // This is also used to count the number of clients when broadcasting
-    // Client addr to (index in above Vecs AKA a client ID, Connection)
-    client_connections: Arc<RwLock<HashMap<String, (u32, Connection)>>>,
-    server_connection: Option<(String, Connection)>,
+    /// Remote Id (index in IndexMaps) -> (addr, Connection)
+    remote_connections: Arc<RwLock<HashMap<u32, (String, Connection)>>>,
     // (Socket Address, Endpoint)
     source: (String, Option<Arc<Endpoint>>),
+    /// For tracking receive packet Ids
     next_receive_id: u32,
+    /// For tracking send packet Ids
     next_send_id: u32,
     // We construct a single Tokio Runtime to be used by each PacketManger instance, so that
     // methods can be synchronous.  There is also an async version of each API if the user wants
@@ -424,8 +434,7 @@ impl PacketManager {
                 rx: IndexMap::new(),
                 new_send_streams: Arc::new(RwLock::new(vec![])),
                 new_rxs: Arc::new(RwLock::new(Vec::new())),
-                client_connections: Arc::new(RwLock::new(HashMap::new())),
-                server_connection: None,
+                remote_connections: Arc::new(RwLock::new(HashMap::new())),
                 source: ("".to_string(), None),
                 next_receive_id: 0,
                 next_send_id: 0,
@@ -449,8 +458,7 @@ impl PacketManager {
             rx: IndexMap::new(),
             new_send_streams: Arc::new(RwLock::new(vec![])),
             new_rxs: Arc::new(Default::default()),
-            client_connections: Arc::new(RwLock::new(HashMap::new())),
-            server_connection: None,
+            remote_connections: Arc::new(RwLock::new(HashMap::new())),
             source: ("".to_string(), None),
             next_receive_id: 0,
             next_send_id: 0,
@@ -486,7 +494,7 @@ impl PacketManager {
                     &self.runtime,
                     &self.new_rxs,
                     &self.new_send_streams,
-                    &mut self.server_connection,
+                    &self.remote_connections,
                     &mut self.source.1,
                 ))
             }
@@ -522,7 +530,7 @@ impl PacketManager {
             &self.runtime,
             &self.new_rxs,
             &self.new_send_streams,
-            &mut self.server_connection,
+            &self.remote_connections,
             &mut self.source.1,
         )
         .await
@@ -556,7 +564,7 @@ impl PacketManager {
                     &self.runtime,
                     &self.new_rxs,
                     &self.new_send_streams,
-                    &self.client_connections,
+                    &self.remote_connections,
                     &mut self.source.1,
                 ))
             }
@@ -592,7 +600,7 @@ impl PacketManager {
             &self.runtime,
             &self.new_rxs,
             &self.new_send_streams,
-            &self.client_connections,
+            &self.remote_connections,
             &mut self.source.1,
         )
         .await
@@ -617,11 +625,9 @@ impl PacketManager {
     async fn init_server_helper(
         server_config: ServerConfig,
         runtime: &Arc<Option<Runtime>>,
-        new_rxs: &Arc<
-            RwLock<Vec<(String, HashMap<u32, (RwLock<Receiver<Bytes>>, JoinHandle<()>)>)>>,
-        >,
-        new_send_streams: &Arc<RwLock<Vec<(String, HashMap<u32, RwLock<SendStream>>)>>>,
-        client_connections: &Arc<RwLock<HashMap<String, (u32, Connection)>>>,
+        new_rxs: &Arc<RwLock<Vec<(u32, HashMap<u32, (RwLock<Receiver<Bytes>>, JoinHandle<()>)>)>>>,
+        new_send_streams: &Arc<RwLock<Vec<(u32, HashMap<u32, RwLock<SendStream>>)>>>,
+        client_connections: &Arc<RwLock<HashMap<u32, (String, Connection)>>>,
         source_endpoint: &mut Option<Arc<Endpoint>>,
     ) -> Result<(), ConnectionError> {
         debug!("Initiating server with {:?}", server_config);
@@ -643,33 +649,34 @@ impl PacketManager {
             let incoming_conn = endpoint.accept().await.unwrap();
             let conn = incoming_conn.await?;
             let addr = conn.remote_address();
-            if client_connections.read().await.contains_key(&addr.to_string()) {
-                panic!("[server] Client with addr={} was already connected", addr);
+            if client_connections.read().await.contains_key(&i) {
+                panic!(
+                    "[server] Client with addr={} was already connected as remote_id={}",
+                    addr, i
+                );
             }
-            println!("[server] connection accepted: addr={}", conn.remote_address());
+            println!(
+                "[server] connection accepted: addr={}, remote_id={}",
+                conn.remote_address(),
+                i
+            );
             let (server_send_streams, recv_streams) = PacketManager::open_streams_for_connection(
-                addr.to_string(),
+                i,
                 &conn,
                 num_receive_streams,
                 num_send_streams,
             )
             .await?;
-            let res = PacketManager::spawn_receive_thread(
-                &addr.to_string(),
-                recv_streams,
-                runtime.as_ref(),
-            )?;
-            new_rxs.write().await.push((addr.to_string(), res));
-            new_send_streams.write().await.push((addr.to_string(), server_send_streams));
-            client_connections.write().await.insert(addr.to_string(), (i, conn));
+            let res = PacketManager::spawn_receive_thread(i, recv_streams, runtime.as_ref())?;
+            new_rxs.write().await.push((i, res));
+            new_send_streams.write().await.push((i, server_send_streams));
+            client_connections.write().await.insert(i, (addr.to_string(), conn));
         }
 
-        // TODO: There can be any number of client connections at the same time.  This current blocks on accepting a
-        // single connection at a time, which can become a huge bottleneck
         if server_config.total_expected_clients.is_none()
             || server_config.total_expected_clients.unwrap() > server_config.wait_for_clients
         {
-            let client_id = Arc::new(Mutex::new(server_config.wait_for_clients));
+            let remote_id = Arc::new(Mutex::new(server_config.wait_for_clients));
 
             // TODO: save this value
             for i in 0..server_config.max_concurrent_accepts {
@@ -680,8 +687,9 @@ impl PacketManager {
                 let arc_rx = new_rxs.clone();
                 let arc_runtime = Arc::clone(runtime);
                 let endpoint = Arc::clone(&endpoint);
-                let client_id_clone = Arc::clone(&client_id);
+                let remote_id_clone = Arc::clone(&remote_id);
 
+                // TODO: refactor
                 let accept_client_task = async move {
                     match server_config.total_expected_clients {
                         None => loop {
@@ -689,27 +697,27 @@ impl PacketManager {
                             let incoming_conn = endpoint.accept().await.unwrap();
                             let conn = incoming_conn.await?;
                             let addr = conn.remote_address();
-                            if client_connections.read().await.contains_key(&addr.to_string()) {
-                                panic!("[server] Client with addr={} was already connected", addr);
+                            let mut id = remote_id_clone.lock().await;
+                            if client_connections.read().await.contains_key(&*id) {
+                                panic!("[server] Client with addr={} was already connected as remote_id={}", addr, id);
                             }
                             debug!("[server] connection accepted: addr={}", conn.remote_address());
                             let (send_streams, recv_streams) =
                                 PacketManager::open_streams_for_connection(
-                                    addr.to_string(),
+                                    *id,
                                     &conn,
                                     num_receive_streams,
                                     num_send_streams,
                                 )
                                 .await?;
                             let res = PacketManager::spawn_receive_thread(
-                                &addr.to_string(),
+                                *id,
                                 recv_streams,
                                 arc_runtime.as_ref(),
                             )?;
-                            arc_rx.write().await.push((addr.to_string(), res));
-                            arc_send_streams.write().await.push((addr.to_string(), send_streams));
-                            let mut id = client_id_clone.lock().await;
-                            client_connections.write().await.insert(addr.to_string(), (*id, conn));
+                            arc_rx.write().await.push((*id, res));
+                            arc_send_streams.write().await.push((*id, send_streams));
+                            client_connections.write().await.insert(*id, (addr.to_string(), conn));
                             *id += 1;
                         },
                         Some(expected_num_clients) => {
@@ -721,10 +729,11 @@ impl PacketManager {
                                 let incoming_conn = endpoint.accept().await.unwrap();
                                 let conn = incoming_conn.await?;
                                 let addr = conn.remote_address();
-                                if client_connections.read().await.contains_key(&addr.to_string()) {
+                                let mut id = remote_id_clone.lock().await;
+                                if client_connections.read().await.contains_key(&*id) {
                                     panic!(
-                                        "[server] Client with addr={} was already connected",
-                                        addr
+                                        "[server] Client with addr={} was already connected as remote_id={}",
+                                        addr, id
                                     );
                                 }
                                 debug!(
@@ -733,27 +742,23 @@ impl PacketManager {
                                 );
                                 let (send_streams, recv_streams) =
                                     PacketManager::open_streams_for_connection(
-                                        addr.to_string(),
+                                        *id,
                                         &conn,
                                         num_receive_streams,
                                         num_send_streams,
                                     )
                                     .await?;
                                 let res = PacketManager::spawn_receive_thread(
-                                    &addr.to_string(),
+                                    *id,
                                     recv_streams,
                                     arc_runtime.as_ref(),
                                 )?;
-                                arc_rx.write().await.push((addr.to_string(), res));
-                                arc_send_streams
-                                    .write()
-                                    .await
-                                    .push((addr.to_string(), send_streams));
-                                let mut id = client_id_clone.lock().await;
+                                arc_rx.write().await.push((*id, res));
+                                arc_send_streams.write().await.push((*id, send_streams));
                                 client_connections
                                     .write()
                                     .await
-                                    .insert(addr.to_string(), (*id, conn));
+                                    .insert(*id, (addr.to_string(), conn));
                                 *id += 1;
                             }
                         }
@@ -775,11 +780,10 @@ impl PacketManager {
     async fn init_client_helper(
         client_config: ClientConfig,
         runtime: &Arc<Option<Runtime>>,
-        new_rxs: &Arc<
-            RwLock<Vec<(String, HashMap<u32, (RwLock<Receiver<Bytes>>, JoinHandle<()>)>)>>,
-        >,
-        new_send_streams: &Arc<RwLock<Vec<(String, HashMap<u32, RwLock<SendStream>>)>>>,
-        server_connection: &mut Option<(String, Connection)>,
+        new_rxs: &Arc<RwLock<Vec<(u32, HashMap<u32, (RwLock<Receiver<Bytes>>, JoinHandle<()>)>)>>>,
+        new_send_streams: &Arc<RwLock<Vec<(u32, HashMap<u32, RwLock<SendStream>>)>>>,
+        // For bookkeeping, but technically the "client_connection" will be the server only
+        client_connections: &Arc<RwLock<HashMap<u32, (String, Connection)>>>,
         source_endpoint: &mut Option<Arc<Endpoint>>,
     ) -> Result<(), ConnectionError> {
         debug!("Initiating client with {:?}", client_config);
@@ -799,22 +803,22 @@ impl PacketManager {
         let addr = conn.remote_address();
         debug!("[client] connected: addr={}", addr);
         let (client_send_streams, recv_streams) = PacketManager::open_streams_for_connection(
-            addr.to_string(),
+            0,
             &conn,
             client_config.num_receive_streams,
             client_config.num_send_streams,
         )
         .await?;
-        let res =
-            PacketManager::spawn_receive_thread(&addr.to_string(), recv_streams, runtime.as_ref())?;
-        new_rxs.write().await.push((addr.to_string(), res));
-        new_send_streams.write().await.push((addr.to_string(), client_send_streams));
-        let _ = server_connection.insert((addr.to_string(), conn));
+        let res = PacketManager::spawn_receive_thread(0, recv_streams, runtime.as_ref())?;
+        // Client side defaults to only having the 1 server at "remote_id" 0
+        new_rxs.write().await.push((0, res));
+        new_send_streams.write().await.push((0, client_send_streams));
+        client_connections.write().await.insert(0, (addr.to_string(), conn));
         Ok(())
     }
 
     async fn open_streams_for_connection(
-        addr: String,
+        remote_id: u32,
         conn: &Connection,
         num_incoming_streams: u32,
         num_outgoing_streams: u32,
@@ -824,19 +828,19 @@ impl PacketManager {
         // Note: Packets are not sent immediately upon the write.  The thread needs to be kept
         // open so that the packets can actually be sent over the wire to the client.
         for i in 0..num_outgoing_streams {
-            trace!("Opening outgoing stream for addr={} packet id={}", addr, i);
+            trace!("Opening outgoing stream for remote_id={} packet id={}", remote_id, i);
             let mut send_stream = conn.open_uni().await?;
-            trace!("Writing packet to {} for packet id {}", addr, i);
+            trace!("Writing packet to {} for packet id {}", remote_id, i);
             send_stream.write_u32(i).await?;
             send_streams.insert(i, RwLock::new(send_stream));
         }
 
         for i in 0..num_incoming_streams {
-            trace!("Accepting incoming stream from {} for packet id {}", addr, i);
+            trace!("Accepting incoming stream from {} for packet id {}", remote_id, i);
             let mut recv = conn.accept_uni().await?;
-            trace!("Validating incoming packet from {} id {}", addr, i);
+            trace!("Validating incoming packet from {} id {}", remote_id, i);
             let id = recv.read_u32().await?;
-            trace!("Received incoming packet from {} with packet id {}", addr, id);
+            trace!("Received incoming packet from {} with packet id {}", remote_id, id);
             // if id >= self.next_receive_id {
             //     return Err(Box::new(ConnectionError::new(format!("Received unexpected packet ID {} from server", id))));
             // }
@@ -847,18 +851,20 @@ impl PacketManager {
         Ok((send_streams, recv_streams))
     }
 
-    fn spawn_receive_thread<S: Into<String>>(
-        addr: S,
+    fn spawn_receive_thread(
+        remote_id: u32,
         recv_streams: HashMap<u32, RecvStream>,
         runtime: &Option<Runtime>,
     ) -> Result<HashMap<u32, (RwLock<Receiver<Bytes>>, JoinHandle<()>)>, Box<dyn Error>> {
         let mut rxs = HashMap::new();
-        let addr = addr.into();
-        trace!("Spawning receive thread for addr={} for {} ids", addr, recv_streams.len());
+        trace!(
+            "Spawning receive thread for remote_id={} for {} ids",
+            remote_id,
+            recv_streams.len()
+        );
         for (id, mut recv_stream) in recv_streams.into_iter() {
             let (tx, rx) = mpsc::channel(100);
 
-            let addr_clone = addr.clone();
             let task = async move {
                 let mut partial_chunk: Option<Bytes> = None;
                 loop {
@@ -869,7 +875,7 @@ impl PacketManager {
                         match e {
                             ReadError::Reset(_) => {}
                             ReadError::ConnectionLost(_) => {
-                                warn!("Receive stream for addr={}, packet id={} errored.  This may mean the connection was closed prematurely: {:?}", addr_clone, id, e);
+                                warn!("Receive stream for remote_id={}, packet id={} errored.  This may mean the connection was closed prematurely: {:?}", remote_id, id, e);
                                 break;
                             }
                             ReadError::UnknownStream => {}
@@ -881,8 +887,8 @@ impl PacketManager {
                         None => {
                             // TODO: Error
                             debug!(
-                                "Receive stream for addr={}, packet id={} is finished, got None when reading chunks",
-                                addr_clone, id
+                                "Receive stream for remote_id={}, packet id={} is finished, got None when reading chunks",
+                                remote_id, id
                             );
                             break;
                         }
@@ -1081,7 +1087,7 @@ impl PacketManager {
     pub fn received_all<T: Packet + 'static, U: PacketBuilder<T> + 'static>(
         &mut self,
         blocking: bool,
-    ) -> Result<Vec<(String, Option<Vec<T>>)>, ReceiveError> {
+    ) -> Result<Vec<(u32, Option<Vec<T>>)>, ReceiveError> {
         self.validate_for_received::<T>(true)?;
         self.update_new_receivers();
         match self.runtime.as_ref() {
@@ -1093,11 +1099,11 @@ impl PacketManager {
                     let mut res = vec![];
                     let mut err: Option<ReceiveError> = None;
                     // If we find any streams are closed, save them to cleanup and close the connections after iterating
-                    let mut addr_to_close = Vec::new();
-                    for (addr, rxs) in self.rx.iter() {
+                    let mut remote_id_to_close = Vec::new();
+                    for (remote_id, rxs) in self.rx.iter() {
                         let received = PacketManager::async_received_helper::<T, U>(
                             blocking,
-                            addr,
+                            *remote_id,
                             &self.receive_packets,
                             &self.recv_packet_builders,
                             rxs,
@@ -1106,7 +1112,7 @@ impl PacketManager {
 
                         match received {
                             Ok(received) => {
-                                res.push((addr.clone(), received));
+                                res.push((*remote_id, received));
                             }
                             Err(e) => match e.error_type {
                                 ErrorType::Unexpected => {
@@ -1114,22 +1120,23 @@ impl PacketManager {
                                     break;
                                 }
                                 ErrorType::Disconnected => {
-                                    addr_to_close.push(addr.clone());
+                                    remote_id_to_close.push(*remote_id);
                                 }
                             },
                         }
                     }
 
                     if let Some(e) = err {
-                        return (addr_to_close, Err(e));
+                        return (remote_id_to_close, Err(e));
                     }
-                    (addr_to_close, Ok(res))
+                    (remote_id_to_close, Ok(res))
                 });
 
-                for addr in res.0.iter() {
-                    warn!("Receive stream for addr={} disconnected.  Removing it from the receive queue and continuing as normal.", addr);
-                    self.close_connection(addr)
-                        .unwrap_or_else(|_| panic!("Could not close connection for addr={}", addr));
+                for remote_id in res.0.iter() {
+                    warn!("Receive stream for remote_id={} disconnected.  Removing it from the receive queue and continuing as normal.", remote_id);
+                    self.close_connection(*remote_id).unwrap_or_else(|_| {
+                        panic!("Could not close connection for remote_id={}", remote_id)
+                    });
                 }
 
                 res.1
@@ -1147,7 +1154,7 @@ impl PacketManager {
     pub async fn async_received_all<T: Packet + 'static, U: PacketBuilder<T> + 'static>(
         &mut self,
         blocking: bool,
-    ) -> Result<Vec<(String, Option<Vec<T>>)>, ReceiveError> {
+    ) -> Result<Vec<(u32, Option<Vec<T>>)>, ReceiveError> {
         if self.runtime.is_some() {
             panic!("PacketManager has a runtime instance associated with it.  If you are using async_received(), make sure you create the PacketManager using new_for_async(), not new()");
         }
@@ -1156,11 +1163,11 @@ impl PacketManager {
         let mut res = vec![];
         let mut err: Option<ReceiveError> = None;
         // If we find any streams are closed, save them to cleanup and close the connections after iterating
-        let mut addr_to_close = Vec::new();
-        for (addr, rxs) in self.rx.iter() {
+        let mut remote_id_to_close = Vec::new();
+        for (remote_id, rxs) in self.rx.iter() {
             let received = PacketManager::async_received_helper::<T, U>(
                 blocking,
-                addr,
+                *remote_id,
                 &self.receive_packets,
                 &self.recv_packet_builders,
                 rxs,
@@ -1169,7 +1176,7 @@ impl PacketManager {
 
             match received {
                 Ok(received) => {
-                    res.push((addr.clone(), received));
+                    res.push((*remote_id, received));
                 }
                 Err(e) => match e.error_type {
                     ErrorType::Unexpected => {
@@ -1177,17 +1184,17 @@ impl PacketManager {
                         break;
                     }
                     ErrorType::Disconnected => {
-                        addr_to_close.push(addr.clone());
+                        remote_id_to_close.push(*remote_id);
                     }
                 },
             }
         }
 
-        for addr in addr_to_close.iter() {
-            warn!("Receive stream for addr={} disconnected.  Removing it from the receive queue and continuing as normal.", addr);
-            self.async_close_connection(addr)
-                .await
-                .unwrap_or_else(|_| panic!("Could not close connection for addr={}", addr));
+        for remote_id in remote_id_to_close.iter() {
+            warn!("Receive stream for remote_id={} disconnected.  Removing it from the receive queue and continuing as normal.", remote_id);
+            self.async_close_connection(*remote_id).await.unwrap_or_else(|_| {
+                panic!("Could not close connection for remote_id={}", remote_id)
+            });
         }
 
         if let Some(e) = err {
@@ -1234,7 +1241,7 @@ impl PacketManager {
                 let rxs = self.rx.first().unwrap();
                 PacketManager::async_received_helper::<T, U>(
                     blocking,
-                    rxs.0,
+                    *rxs.0,
                     &self.receive_packets,
                     &self.recv_packet_builders,
                     rxs.1,
@@ -1263,7 +1270,7 @@ impl PacketManager {
         let rxs = self.rx.first().unwrap();
         PacketManager::async_received_helper::<T, U>(
             blocking,
-            rxs.0,
+            *rxs.0,
             &self.receive_packets,
             &self.recv_packet_builders,
             rxs.1,
@@ -1275,7 +1282,7 @@ impl PacketManager {
     // TODO: Handle connections dropped, if joinhandle failed, close the connection and return error, etc.
     async fn async_received_helper<T: Packet + 'static, U: PacketBuilder<T> + 'static>(
         blocking: bool,
-        addr: &String,
+        remote_id: u32,
         receive_packets: &BiMap<u32, TypeId>,
         recv_packet_builders: &HashMap<TypeId, Box<dyn Any + Send + Sync>>,
         rxs: &HashMap<u32, (RwLock<Receiver<Bytes>>, JoinHandle<()>)>,
@@ -1333,11 +1340,11 @@ impl PacketManager {
             return Ok(None);
         }
         debug!(
-            "Fetched {} received packets of type={}, id={}, from addr={}",
+            "Fetched {} received packets of type={}, id={}, from remote_id={}",
             res.len(),
             type_name::<T>(),
             id,
-            addr
+            remote_id
         );
         Ok(Some(res))
     }
@@ -1380,11 +1387,11 @@ impl PacketManager {
         let mut new_rx_lock = self.new_rxs.blocking_write();
         if !new_rx_lock.is_empty() {
             let new_rx_vec = std::mem::take(&mut *new_rx_lock);
-            for (addr, val) in new_rx_vec.into_iter() {
-                if self.rx.contains_key(&addr) {
-                    panic!("Receive stream for {} already existed!  There cannot be multiple connections between the same Socket addresses for the same protocol.", addr);
+            for (remote_id, val) in new_rx_vec.into_iter() {
+                if self.rx.contains_key(&remote_id) {
+                    panic!("Receive stream for remote_id={} already existed!  There cannot be multiple connections between the same Socket addresses for the same protocol.", remote_id);
                 }
-                self.rx.insert(addr, val);
+                self.rx.insert(remote_id, val);
             }
         }
     }
@@ -1393,11 +1400,11 @@ impl PacketManager {
         let mut new_rx_lock = self.new_rxs.write().await;
         if !new_rx_lock.is_empty() {
             let new_rx_vec = std::mem::take(&mut *new_rx_lock);
-            for (addr, val) in new_rx_vec.into_iter() {
-                if self.rx.contains_key(&addr) {
-                    panic!("Receive stream for {} already existed!  There cannot be multiple connections between the same Socket addresses for the same protocol.", addr);
+            for (remote_id, val) in new_rx_vec.into_iter() {
+                if self.rx.contains_key(&remote_id) {
+                    panic!("Receive stream for remote_id={} already existed!  There cannot be multiple connections between the same Socket addresses for the same protocol.", remote_id);
                 }
-                self.rx.insert(addr, val);
+                self.rx.insert(remote_id, val);
             }
         }
     }
@@ -1457,11 +1464,11 @@ impl PacketManager {
                 let res = runtime.block_on(async {
                     let mut err: Option<SendError> = None;
                     // If we find any streams are closed, save them to cleanup and close the connections after iterating
-                    let mut addr_to_close = Vec::new();
-                    for (addr, send_streams) in self.send_streams.iter() {
+                    let mut remote_id_to_close = Vec::new();
+                    for (remote_id, send_streams) in self.send_streams.iter() {
                         let sent = PacketManager::async_send_helper::<T>(
                             &packet,
-                            addr,
+                            *remote_id,
                             &self.send_packets,
                             send_streams,
                         )
@@ -1475,23 +1482,24 @@ impl PacketManager {
                                     break;
                                 }
                                 ErrorType::Disconnected => {
-                                    addr_to_close.push(addr.clone());
+                                    remote_id_to_close.push(*remote_id);
                                 }
                             }
                         }
                     }
 
                     if let Some(e) = err {
-                        return (addr_to_close, Err(e));
+                        return (remote_id_to_close, Err(e));
                     }
 
-                    (addr_to_close, Ok(()))
+                    (remote_id_to_close, Ok(()))
                 });
 
-                for addr in res.0.iter() {
-                    warn!("Send stream for addr={} disconnected.  Removing it from the send queue and continuing as normal.", addr);
-                    self.close_connection(addr)
-                        .unwrap_or_else(|_| panic!("Could not close connection for addr={}", addr));
+                for remote_id in res.0.iter() {
+                    warn!("Send stream for remote_id={} disconnected.  Removing it from the send queue and continuing as normal.", remote_id);
+                    self.close_connection(*remote_id).unwrap_or_else(|_| {
+                        panic!("Could not close connection for remote_id={}", remote_id)
+                    });
                 }
 
                 res.1
@@ -1517,11 +1525,11 @@ impl PacketManager {
         self.async_update_new_senders().await;
         let mut err: Option<SendError> = None;
         // If we find any streams are closed, save them to cleanup and close the connections after iterating
-        let mut addr_to_close = Vec::new();
-        for (addr, send_streams) in self.send_streams.iter() {
+        let mut remote_id_to_close = Vec::new();
+        for (remote_id, send_streams) in self.send_streams.iter() {
             let sent = PacketManager::async_send_helper::<T>(
                 &packet,
-                addr,
+                *remote_id,
                 &self.send_packets,
                 send_streams,
             )
@@ -1535,20 +1543,20 @@ impl PacketManager {
                         break;
                     }
                     ErrorType::Disconnected => {
-                        addr_to_close.push(addr.clone());
+                        remote_id_to_close.push(*remote_id);
                     }
                 }
             }
         }
 
-        for addr in addr_to_close.iter() {
+        for remote_id in remote_id_to_close.iter() {
             warn!(
-                "Send stream for addr={} disconnected.  Removing it from the send queue and continuing as normal.",
-                addr
+                "Send stream for remote_id={} disconnected.  Removing it from the send queue and continuing as normal.",
+                remote_id
             );
-            self.async_close_connection(addr)
-                .await
-                .unwrap_or_else(|_| panic!("Could not close connection for addr={}", addr));
+            self.async_close_connection(*remote_id).await.unwrap_or_else(|_| {
+                panic!("Could not close connection for remote_id={}", remote_id)
+            });
         }
 
         if let Some(e) = err {
@@ -1581,7 +1589,7 @@ impl PacketManager {
                     let first = self.send_streams.first().unwrap();
                     PacketManager::async_send_helper::<T>(
                         &packet,
-                        first.0,
+                        *first.0,
                         &self.send_packets,
                         first.1,
                     )
@@ -1609,7 +1617,7 @@ impl PacketManager {
         self.async_update_new_senders().await;
         let first = self.send_streams.first().unwrap();
         let res =
-            PacketManager::async_send_helper::<T>(&packet, first.0, &self.send_packets, first.1)
+            PacketManager::async_send_helper::<T>(&packet, *first.0, &self.send_packets, first.1)
                 .await;
         if let Err(e) = &res {
             warn!("Ran into error during async_send(): {}", e);
@@ -1620,7 +1628,7 @@ impl PacketManager {
     /// Send a Packet to a specified destination address.
     ///
     /// # Arguments
-    /// * `addr` - The destination Socket address to send the Packet to
+    /// * `remote_id` - The destination Remote Id to send the Packet to
     /// * `packet` - The [`Packet`] to broadcast
     ///
     /// # Returns
@@ -1631,7 +1639,7 @@ impl PacketManager {
     /// If the [`PacketManager`] was created via [`new_for_async()`](`PacketManager::new_for_async()`)
     pub fn send_to<T: Packet + 'static>(
         &mut self,
-        addr: impl Into<String>,
+        remote_id: u32,
         packet: T,
     ) -> Result<(), SendError> {
         self.validate_for_send::<T>(true)?;
@@ -1641,15 +1649,14 @@ impl PacketManager {
                 panic!("PacketManager does not have a runtime instance associated with it.  Did you mean to call async_send_to()?");
             }
             Some(runtime) => {
-                let addr = addr.into();
-                let res = match self.send_streams.get(&addr) {
+                let res = match self.send_streams.get(&remote_id) {
                     None => Err(SendError::new(format!(
-                        "Could not find Send stream for address {}",
-                        addr
+                        "Could not find Send stream for remote_id={}",
+                        remote_id
                     ))),
                     Some(send_streams) => runtime.block_on(PacketManager::async_send_helper::<T>(
                         &packet,
-                        &addr,
+                        remote_id,
                         &self.send_packets,
                         send_streams,
                     )),
@@ -1662,10 +1669,9 @@ impl PacketManager {
                         match e.error_type {
                             ErrorType::Unexpected => Err(e),
                             ErrorType::Disconnected => {
-                                let addr_clone = addr.clone();
-                                warn!("Send stream for addr={} disconnected.  Removing it from the send queue and returning error.", addr);
-                                self.close_connection(addr).unwrap_or_else(|_| {
-                                    panic!("Could not close connection for addr={}", addr_clone)
+                                warn!("Send stream for remote_id={} disconnected.  Removing it from the send queue and returning error.", remote_id);
+                                self.close_connection(remote_id).unwrap_or_else(|_| {
+                                    panic!("Could not close connection for remote_id={}", remote_id)
                                 });
                                 Err(e)
                             }
@@ -1684,7 +1690,7 @@ impl PacketManager {
     /// - If the `PacketManager` was created via [`new()`](`PacketManager::new()`)
     pub async fn async_send_to<T: Packet + 'static>(
         &mut self,
-        addr: impl Into<String>,
+        remote_id: u32,
         packet: T,
     ) -> Result<(), SendError> {
         if self.runtime.is_some() {
@@ -1692,13 +1698,15 @@ impl PacketManager {
         }
         self.async_validate_for_send::<T>(true).await?;
         self.async_update_new_senders().await;
-        let addr = addr.into();
-        let res = match self.send_streams.get(&addr) {
-            None => Err(SendError::new(format!("Could not find Send stream for address {}", addr))),
+        let res = match self.send_streams.get(&remote_id) {
+            None => Err(SendError::new(format!(
+                "Could not find Send stream for remote_id={}",
+                remote_id
+            ))),
             Some(send_streams) => {
                 PacketManager::async_send_helper::<T>(
                     &packet,
-                    &addr,
+                    remote_id,
                     &self.send_packets,
                     send_streams,
                 )
@@ -1713,10 +1721,9 @@ impl PacketManager {
                 match e.error_type {
                     ErrorType::Unexpected => Err(e),
                     ErrorType::Disconnected => {
-                        let addr_clone = addr.clone();
-                        warn!("Send stream for addr={} disconnected.  Removing it from the send queue and returning error.", addr);
-                        self.async_close_connection(addr).await.unwrap_or_else(|_| {
-                            panic!("Could not close connection for addr={}", addr_clone)
+                        warn!("Send stream for remote_id={} disconnected.  Removing it from the send queue and returning error.", remote_id);
+                        self.async_close_connection(remote_id).await.unwrap_or_else(|_| {
+                            panic!("Could not close connection for remote_id={}", remote_id)
                         });
                         Err(e)
                     }
@@ -1729,11 +1736,11 @@ impl PacketManager {
         let mut new_send_stream_lock = self.new_send_streams.blocking_write();
         if !new_send_stream_lock.is_empty() {
             let new_send_streams_vec = std::mem::take(&mut *new_send_stream_lock);
-            for (addr, val) in new_send_streams_vec.into_iter() {
-                if self.send_streams.contains_key(&addr) {
-                    panic!("Send stream for {} already existed!  There cannot be multiple connections between the same Socket addresses for the same protocol.", addr);
+            for (remote_id, val) in new_send_streams_vec.into_iter() {
+                if self.send_streams.contains_key(&remote_id) {
+                    panic!("Send stream for {} already existed!  There cannot be multiple connections between the same Socket addresses for the same protocol.", remote_id);
                 }
-                self.send_streams.insert(addr, val);
+                self.send_streams.insert(remote_id, val);
             }
         }
     }
@@ -1742,11 +1749,11 @@ impl PacketManager {
         let mut new_send_stream_lock = self.new_send_streams.write().await;
         if !new_send_stream_lock.is_empty() {
             let new_send_streams_vec = std::mem::take(&mut *new_send_stream_lock);
-            for (addr, val) in new_send_streams_vec.into_iter() {
-                if self.send_streams.contains_key(&addr) {
-                    panic!("Send stream for {} already existed!  There cannot be multiple connections between the same Socket addresses for the same protocol.", addr);
+            for (remote_id, val) in new_send_streams_vec.into_iter() {
+                if self.send_streams.contains_key(&remote_id) {
+                    panic!("Send stream for {} already existed!  There cannot be multiple connections between the same Socket addresses for the same protocol.", remote_id);
                 }
-                self.send_streams.insert(addr, val);
+                self.send_streams.insert(remote_id, val);
             }
         }
     }
@@ -1754,7 +1761,7 @@ impl PacketManager {
     // TODO: handle connection dropped
     async fn async_send_helper<T: Packet + 'static>(
         packet: &T,
-        addr: &String,
+        remote_id: u32,
         send_packets: &BiMap<u32, TypeId>,
         send_streams: &HashMap<u32, RwLock<SendStream>>,
     ) -> Result<(), SendError> {
@@ -1762,21 +1769,21 @@ impl PacketManager {
         let packet_type_id = TypeId::of::<T>();
         let id = send_packets.get_by_right(&packet_type_id).unwrap();
         let mut send_stream = send_streams.get(id).unwrap().write().await;
-        debug!("Sending bytes to {} with len {}", addr, bytes.len());
+        debug!("Sending bytes to remote_id={} with len {}", remote_id, bytes.len());
         trace!("Sending bytes {:?}", bytes);
         if let Err(e) = send_stream.write_chunk(bytes).await {
             return match e {
                 WriteError::ConnectionLost(e) => Err(SendError::new_with_type(
                     format!(
-                        "Send stream for addr={}, packet id={} is disconnected: {:?}",
-                        addr, id, e
+                        "Send stream for remote_id={}, packet id={} is disconnected: {:?}",
+                        remote_id, id, e
                     ),
                     ErrorType::Disconnected,
                 )),
                 _ => Err(SendError::new_with_type(
                     format!(
-                        "Send stream for addr={}, packet id={} ran into unexpected error: {:?}",
-                        addr, id, e
+                        "Send stream for remote_id={}, packet id={} ran into unexpected error: {:?}",
+                        remote_id, id, e
                     ),
                     ErrorType::Unexpected,
                 )),
@@ -1787,85 +1794,74 @@ impl PacketManager {
             return match e {
                 WriteError::ConnectionLost(e) => {
                     Err(SendError::new_with_type(
-                        format!("Send stream for addr={}, packet id={} is disconnected: {:?}", addr, id, e),
+                        format!("Send stream for remote_id={}, packet id={} is disconnected: {:?}", remote_id, id, e),
                         ErrorType::Disconnected,
                     ))
                 },
-                _ => { Err(SendError::new_with_type(format!("Send stream for addr={}, packet id={} ran into unexpected error when writing frame boundary: {:?}", addr, id, e), ErrorType::Unexpected)) }
+                _ => { Err(SendError::new_with_type(format!("Send stream for remote_id={}, packet id={} ran into unexpected error when writing frame boundary: {:?}", remote_id, id, e), ErrorType::Unexpected)) }
             };
         }
-        debug!("Sent packet to {} with id={}, type={}", addr, id, type_name::<T>());
+        debug!("Sent packet to remote_id={} with id={}, type={}", remote_id, id, type_name::<T>());
         Ok(())
     }
 
     /// Returns the number of clients attached to this server.  This will always return `0` if on a client side.
     pub fn get_num_clients(&self) -> u32 {
-        self.client_connections.blocking_read().len() as u32
+        self.remote_connections.blocking_read().len() as u32
     }
 
     /// Returns the number of clients attached to this server.  This will always return `0` if on a client side.
     pub async fn async_get_num_clients(&self) -> u32 {
-        self.client_connections.read().await.len() as u32
+        self.remote_connections.read().await.len() as u32
     }
 
-    /// Returns the client connections in tuples of (client SocketAddress, client ID)
-    pub fn get_client_connections(&self) -> Vec<(String, u32)> {
-        self.client_connections
+    /// Returns the client connections in tuples of (remote Id, Socket Address)
+    pub fn get_remote_connections(&self) -> Vec<(u32, String)> {
+        self.remote_connections
             .blocking_read()
             .iter()
-            .map(|(addr, con)| (addr.clone(), con.0))
+            .map(|(remote_id, con)| (*remote_id, con.0.clone()))
             .collect()
     }
 
-    /// Returns the client connections in tuples of (client SocketAddress, client ID)
-    pub async fn async_get_client_connections(&self) -> Vec<(String, u32)> {
-        self.client_connections
+    /// Returns the client connections in tuples of (remote Id, Socket Address)
+    pub async fn async_get_remote_connections(&self) -> Vec<(u32, String)> {
+        self.remote_connections
             .read()
             .await
             .iter()
-            .map(|(addr, con)| (addr.clone(), con.0))
+            .map(|(remote_id, con)| (*remote_id, con.0.clone()))
             .collect()
     }
 
-    /// Returns the `Client ID` for a Socket address.  Client IDs start from 0 and are incremented in the order each
-    /// client is connected to the server.  This can be helpful to associated some sort of numerical ID with clients.
+    /// Returns the Socket IP Address for a remote Id.  Remote Ids start from 0 and are incremented in the order each
+    /// remote client is connected to the current connection.  This can be helpful to associated some sort of numerical ID with clients.
     ///
     /// # Returns
-    /// [`None`] if the client address was not a valid address in client connections.  [`Some`] containing the Client ID
-    /// for the requested client Socket address.
-    ///
-    /// # Panics
-    /// If called from a client side
-    pub fn get_client_id<S: Into<String>>(&self, addr: S) -> Option<u32> {
-        let client_connections = self.client_connections.blocking_read();
-        let addr = addr.into();
-        if client_connections.is_empty() {
-            panic!("get_client_id() should only be called on the server side for a valid client Socket address");
-        }
-        if !client_connections.contains_key(&addr) {
+    /// [`None`] if the remote Id was not a valid Id in remote connections.  [`Some`] containing the Remote address
+    /// for the requested remote Id.
+    pub fn get_remote_address(&self, remote_id: u32) -> Option<String> {
+        let remote_connections = self.remote_connections.blocking_read();
+        if !remote_connections.contains_key(&remote_id) {
             return None;
         }
-        Some(client_connections.get(&addr).unwrap().0)
+        Some(remote_connections.get(&remote_id).unwrap().0.clone())
     }
 
-    /// Returns the `Client ID` for a Socket address.  Client IDs start from 0 and are incremented in the order each
-    /// client is connected to the server.  This can be helpful to associated some sort of numerical ID with clients.
+    /// Returns the Socket IP Address for a remote Id.  Remote Ids start from 0 and are incremented in the order each
+    /// remote client is connected to the current connection.  This can be helpful to associated some sort of numerical ID with clients.
     ///
-    /// Same as [`get_client_id`](`PacketManager::get_client_id()`), except returns a `Future` and can be called from
+    /// Same as [`get_remote_id`](`PacketManager::get_remote_id()`), except returns a `Future` and can be called from
     /// an async context.
-    pub async fn async_get_client_id<S: Into<String>>(&self, addr: S) -> Option<u32> {
-        let client_connections = self.client_connections.read().await;
-        let addr = addr.into();
-        if client_connections.is_empty() {
-            panic!("get_client_id() should only be called on the server side for a valid client Socket address");
-        }
-        if !client_connections.contains_key(&addr) {
+    pub async fn async_get_remote_address(&self, remote_id: u32) -> Option<String> {
+        let client_connections = self.remote_connections.read().await;
+        if !client_connections.contains_key(&remote_id) {
             return None;
         }
-        Some(client_connections.get(&addr).unwrap().0)
+        Some(client_connections.get(&remote_id).unwrap().0.clone())
     }
 
-    /// Close the connection with a destination Socket address
+    /// Close the connection with a destination remote Id
     ///
     /// __Warning: this will forcefully close the connection, causing any Packets in stream queues that haven't already
     /// sent over the wire to be dropped.__
@@ -1876,57 +1872,58 @@ impl PacketManager {
     /// # Returns
     /// A [`Result`] containing `()` on success, [`CloseError`] if error occurred while closing the connection.  Note:
     /// connection resources may be partially closed.
-    pub fn close_connection<S: Into<String>>(&mut self, addr: S) -> Result<(), CloseError> {
+    pub fn close_connection(&mut self, remote_id: u32) -> Result<(), CloseError> {
         // Update senders and receivers before checking what to remove
         self.update_new_senders();
         self.update_new_receivers();
-        let addr = addr.into();
-        let mut client_connections = self.client_connections.blocking_write();
-        if let Some((id, conn)) = client_connections.get(&addr) {
-            debug!("Forcefully closing connection for client addr={}, id={}", addr, id);
+        let mut client_connections = self.remote_connections.blocking_write();
+        if let Some((addr, conn)) = client_connections.get(&remote_id) {
+            debug!(
+                "Forcefully closing connection for remote addr={}, remote_id={}",
+                addr, remote_id
+            );
             conn.close(
                 VarInt::from(1_u8),
                 "PacketManager::close_connection() called for this connection".as_bytes(),
             );
         }
-        client_connections.remove(&addr);
+        client_connections.remove(&remote_id);
         // Note: We don't gracefully shut down the streams individually, as they should shut down on their own eventually
-        self.send_streams.remove(&addr);
-        self.rx.remove(&addr);
+        self.send_streams.remove(&remote_id);
+        self.rx.remove(&remote_id);
         Ok(())
     }
 
-    /// Close the connection with a destination Socket address
+    /// Close the connection with a destination Remote Id
     ///
     /// __Warning: this will forcefully close the connection, causing any Packets in stream queues that haven't already
     /// sent over the wire to be dropped.__
     ///
     /// Same as [`close_connection()`](`PacketManager::close_connection()`), except returns a Future and can be called
     /// from an async context.
-    pub async fn async_close_connection<S: Into<String>>(
-        &mut self,
-        addr: S,
-    ) -> Result<(), CloseError> {
+    pub async fn async_close_connection(&mut self, remote_id: u32) -> Result<(), CloseError> {
         // Update senders and receivers before checking what to remove
         self.async_update_new_senders().await;
         self.async_update_new_receivers().await;
-        let addr = addr.into();
-        let mut client_connections = self.client_connections.write().await;
-        if let Some((id, conn)) = client_connections.get(&addr) {
-            debug!("Forcefully closing connection for client addr={}, id={}", addr, id);
+        let mut client_connections = self.remote_connections.write().await;
+        if let Some((addr, conn)) = client_connections.get(&remote_id) {
+            debug!(
+                "Forcefully closing connection for remote addr={}, remote_id={}",
+                addr, remote_id
+            );
             conn.close(
                 VarInt::from(1_u8),
                 "PacketManager::close_connection() called for this connection".as_bytes(),
             );
         }
-        client_connections.remove(&addr);
+        client_connections.remove(&remote_id);
         // Note: We don't gracefully shut down the streams individually, as they should shut down on their own eventually
-        self.send_streams.remove(&addr);
-        self.rx.remove(&addr);
+        self.send_streams.remove(&remote_id);
+        self.rx.remove(&remote_id);
         Ok(())
     }
 
-    /// Closes the connection with a destination Socket address after flushing all send streams gracefully.
+    /// Closes the connection with a destination Remote Id after flushing all send streams gracefully.
     ///
     /// This differs from [`close_connection()`](`PacketManager::close_connection()`) in that it gracefully flushes all
     /// send streams, and waits for acks on each before closing the connection.
@@ -1937,74 +1934,69 @@ impl PacketManager {
     /// # Returns
     /// A [`Result`] containing `()` on success, [`CloseError`] if error occurred while closing the connection.  Note:
     /// connection resources may be partially closed.
-    pub fn finish_connection<S: Into<String>>(&mut self, addr: S) -> Result<(), CloseError> {
+    pub fn finish_connection(&mut self, remote_id: u32) -> Result<(), CloseError> {
         // Update senders and receivers before checking what to remove
         self.update_new_senders();
         self.update_new_receivers();
-        let addr = addr.into();
         // Finish all send streams
         match self.runtime.as_ref() {
             None => {
                 panic!("PacketManager does not have a runtime instance associated with it.  Did you mean to call async_finish_connection()?");
             }
             Some(runtime) => runtime.block_on(async {
-                if let Some(send_streams) = self.send_streams.get(&addr) {
+                if let Some(send_streams) = self.send_streams.get(&remote_id) {
                     for send_stream in send_streams.values() {
                         if let Err(e) = send_stream.write().await.finish().await {
                             debug!(
-                                "Could not finish send stream for addr={}.  Continuing to close connection: {:?}",
-                                addr, e
+                                "Could not finish send stream for remote_id={}.  Continuing to close connection: {:?}",
+                                remote_id, e
                             );
                         }
                     }
                 }
             }),
         };
-        self.send_streams.remove(&addr);
-        let mut client_connections = self.client_connections.blocking_write();
-        if let Some((id, conn)) = client_connections.get(&addr) {
-            debug!("Finishing connection for client addr={}, id={}", addr, id);
+        self.send_streams.remove(&remote_id);
+        let mut client_connections = self.remote_connections.blocking_write();
+        if let Some((addr, conn)) = client_connections.get(&remote_id) {
+            debug!("Finishing connection for remote addr={}, remote_id={}", addr, remote_id);
             conn.close(
                 VarInt::from(1_u8),
                 "PacketManager::finish_connection() called for this connection".as_bytes(),
             );
         }
-        client_connections.remove(&addr);
-        self.rx.remove(&addr);
+        client_connections.remove(&remote_id);
+        self.rx.remove(&remote_id);
         Ok(())
     }
 
-    /// Closes the connection with a destination Socket address after flushing all send streams gracefully.
+    /// Closes the connection with a destination Remote Id after flushing all send streams gracefully.
     ///
     /// Same as [`finish_connection()`](`PacketManager::finish_connection()`), except returns a Future and can be called
     /// from an async context.
-    pub async fn async_finish_connection<S: Into<String>>(
-        &mut self,
-        addr: S,
-    ) -> Result<(), CloseError> {
+    pub async fn async_finish_connection(&mut self, remote_id: u32) -> Result<(), CloseError> {
         // Update senders and receivers before checking what to remove
         self.async_update_new_senders().await;
         self.async_update_new_receivers().await;
-        let addr = addr.into();
         // Finish all send streams
-        if let Some(send_streams) = self.send_streams.get(&addr) {
+        if let Some(send_streams) = self.send_streams.get(&remote_id) {
             for send_stream in send_streams.values() {
                 if let Err(e) = send_stream.write().await.finish().await {
-                    debug!("Could not finish send stream for addr={}.  Continuing to close connection: {:?}", addr, e);
+                    debug!("Could not finish send stream for remote_id={}.  Continuing to close connection: {:?}", remote_id, e);
                 }
             }
         }
-        self.send_streams.remove(&addr);
-        let mut client_connections = self.client_connections.write().await;
-        if let Some((id, conn)) = client_connections.get(&addr) {
-            debug!("Finishing connection for client addr={}, id={}", addr, id);
+        self.send_streams.remove(&remote_id);
+        let mut client_connections = self.remote_connections.write().await;
+        if let Some((addr, conn)) = client_connections.get(&remote_id) {
+            debug!("Finishing connection for remote addr={}, remote_id={}", addr, remote_id);
             conn.close(
                 VarInt::from(1_u8),
                 "PacketManager::finish_connection() called for this connection".as_bytes(),
             );
         }
-        client_connections.remove(&addr);
-        self.rx.remove(&addr);
+        client_connections.remove(&remote_id);
+        self.rx.remove(&remote_id);
         Ok(())
     }
 
@@ -2044,11 +2036,11 @@ impl PacketManager {
     // Either we are a single client talking to a single server, or a server talking to potentially multiple clients
     #[inline]
     fn has_more_than_one_remote(&self) -> bool {
-        self.server_connection.is_none() && self.client_connections.blocking_read().len() > 1
+        self.remote_connections.blocking_read().len() > 1
     }
 
     #[inline]
     async fn async_has_more_than_one_remote(&self) -> bool {
-        self.server_connection.is_none() && self.client_connections.read().await.len() > 1
+        self.remote_connections.read().await.len() > 1
     }
 }

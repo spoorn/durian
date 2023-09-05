@@ -41,9 +41,9 @@ async fn receive_packet_e2e_async() {
         assert!(m.register_receive_packet::<Other>(OtherPacketBuilder).is_ok());
         let server_config = ServerConfig::new_listening(server_addr, 1, 2, 2);
         assert!(m.async_init_server(server_config).await.is_ok());
-        let client_connections = m.async_get_client_connections().await;
+        let client_connections = m.async_get_remote_connections().await;
         assert_eq!(client_connections.len(), 1);
-        assert_eq!(client_connections[0], (client_addr.to_string(), 0u32));
+        assert_eq!(client_connections[0], (0, client_addr.to_string()));
 
         let mut packets_to_send = 0;
         let mut test_packets = HashMap::new();
@@ -114,7 +114,7 @@ async fn receive_packet_e2e_async() {
     assert!(manager.register_send_packet::<Other>().is_ok());
     let client_config = ClientConfig::new(client_addr, server_addr, 2, 2);
     let client = manager.async_init_client(client_config).await;
-    assert!(manager.async_get_client_connections().await.is_empty());
+    assert_eq!(manager.async_get_remote_connections().await, vec![(0, server_addr.to_string())]);
     println!("{:#?}", client);
     assert!(client.is_ok());
 
@@ -200,17 +200,17 @@ async fn receive_packet_e2e_async_broadcast() {
         assert!(m.register_receive_packet::<Other>(OtherPacketBuilder).is_ok());
         let server_config = ServerConfig::new_listening(server_addr, 2, 2, 2);
         assert!(m.async_init_server(server_config).await.is_ok());
-        let client_connections = m.async_get_client_connections().await;
+        let client_connections = m.async_get_remote_connections().await;
         assert_eq!(client_connections.len(), 2);
-        let client1_is_first = client_connections[0].0 == client_addr
-            && client_connections[0].1 == 0u32
-            || client_connections[1].0 == client_addr && client_connections[1].1 == 0u32;
+        let client1_is_first = client_connections[0].0 == 0
+            && client_connections[0].1 == client_addr
+            || client_connections[1].0 == 0 && client_connections[1].1 == client_addr;
         if client1_is_first {
-            assert!(client_connections.contains(&(client_addr.to_string(), 0u32)));
-            assert!(client_connections.contains(&(client2_addr.to_string(), 1u32)));
+            assert!(client_connections.contains(&(0, client_addr.to_string())));
+            assert!(client_connections.contains(&(1, client2_addr.to_string())));
         } else {
-            assert!(client_connections.contains(&(client_addr.to_string(), 1u32)));
-            assert!(client_connections.contains(&(client2_addr.to_string(), 0u32)));
+            assert!(client_connections.contains(&(1, client_addr.to_string())));
+            assert!(client_connections.contains(&(0, client2_addr.to_string())));
         }
 
         let mut sent_packets = 0;
@@ -239,7 +239,7 @@ async fn receive_packet_e2e_async_broadcast() {
 
             // When halfway, try disconnecting one of the clients
             if client2_recv_packets >= client2_max_receive && !closed_client2 {
-                m.async_close_connection(client2_addr).await.unwrap();
+                m.async_close_connection(1).await.unwrap();
                 closed_client2 = true;
             }
 
@@ -254,7 +254,7 @@ async fn receive_packet_e2e_async_broadcast() {
             let mut received_all = test_res.unwrap();
             assert_eq!(received_all.len(), if closed_client2 { 1 } else { 2 });
             let (addr, unwrapped) = received_all.remove(0);
-            assert!(m.async_get_client_id(addr.clone()).await.is_some());
+            assert!(m.async_get_remote_address(addr.clone()).await.is_some());
             if unwrapped.is_some() {
                 let mut packets = unwrapped.unwrap();
                 recv_packets += packets.len();
@@ -264,8 +264,8 @@ async fn receive_packet_e2e_async_broadcast() {
 
             if !closed_client2 {
                 let (addr2, unwrapped2) = received_all.remove(0);
-                assert!((addr == client_addr || addr == client2_addr) && (addr != addr2));
-                assert!(m.async_get_client_id(addr2).await.is_some());
+                assert!((addr == 0 || addr == 1) && (addr != addr2));
+                assert!(m.async_get_remote_address(addr2).await.is_some());
                 if unwrapped2.is_some() {
                     let mut packets = unwrapped2.unwrap();
                     recv_packets += packets.len();
@@ -279,7 +279,7 @@ async fn receive_packet_e2e_async_broadcast() {
             let mut received_all = other_res.unwrap();
             assert_eq!(received_all.len(), if closed_client2 { 1 } else { 2 });
             let (addr, unwrapped) = received_all.remove(0);
-            assert!(m.async_get_client_id(addr.clone()).await.is_some());
+            assert!(m.async_get_remote_address(addr).await.is_some());
             if unwrapped.is_some() {
                 let mut packets = unwrapped.unwrap();
                 recv_packets += packets.len();
@@ -289,8 +289,8 @@ async fn receive_packet_e2e_async_broadcast() {
 
             if !closed_client2 {
                 let (addr2, unwrapped2) = received_all.remove(0);
-                assert!((addr == client_addr || addr == client2_addr) && (addr != addr2));
-                assert!(m.async_get_client_id(addr2).await.is_some());
+                assert!((addr == 0 || addr == 1) && (addr != addr2));
+                assert!(m.async_get_remote_address(addr2).await.is_some());
                 if unwrapped2.is_some() {
                     assert!(unwrapped2.is_some());
                     let mut packets = unwrapped2.unwrap();
@@ -336,7 +336,10 @@ async fn receive_packet_e2e_async_broadcast() {
         assert!(manager.register_send_packet::<Other>().is_ok());
         let client_config = ClientConfig::new(client2_addr, server_addr, 2, 2);
         assert!(manager.async_init_client(client_config).await.is_ok());
-        assert!(manager.async_get_client_connections().await.is_empty());
+        assert_eq!(
+            manager.async_get_remote_connections().await,
+            vec![(0, server_addr.to_string())]
+        );
 
         let mut sent_packets = 0;
         let mut recv_packets = 0;
@@ -373,7 +376,7 @@ async fn receive_packet_e2e_async_broadcast() {
             }
             assert!(!received_all.is_empty());
             let (addr, unwrapped) = received_all.remove(0);
-            assert_eq!(addr, server_addr);
+            assert_eq!(addr, 0);
             assert!(unwrapped.is_some());
             let mut packets = unwrapped.unwrap();
             recv_packets += packets.len();
@@ -415,7 +418,7 @@ async fn receive_packet_e2e_async_broadcast() {
     assert!(manager.register_send_packet::<Other>().is_ok());
     let client_config = ClientConfig::new(client_addr, server_addr, 2, 2);
     let client = manager.async_init_client(client_config).await;
-    assert!(manager.async_get_client_connections().await.is_empty());
+    assert_eq!(manager.async_get_remote_connections().await, vec![(0, server_addr.to_string())]);
     println!("client1: {:#?}", client);
 
     assert!(client.is_ok());
@@ -451,7 +454,7 @@ async fn receive_packet_e2e_async_broadcast() {
         let mut received_all = test_res.unwrap();
         assert!(!received_all.is_empty());
         let (addr, unwrapped) = received_all.remove(0);
-        assert_eq!(addr, server_addr);
+        assert_eq!(addr, 0);
         assert!(unwrapped.is_some());
         let mut packets = unwrapped.unwrap();
         recv_packets += packets.len();
@@ -514,17 +517,17 @@ async fn receive_packet_e2e_async_send_to() {
         assert!(m.register_receive_packet::<Other>(OtherPacketBuilder).is_ok());
         let server_config = ServerConfig::new_with_max_clients(server_addr, 2, 2, 2);
         assert!(m.async_init_server(server_config).await.is_ok());
-        let client_connections = m.async_get_client_connections().await;
+        let client_connections = m.async_get_remote_connections().await;
         assert_eq!(client_connections.len(), 2);
-        let client1_is_first = client_connections[0].0 == client_addr
-            && client_connections[0].1 == 0u32
-            || client_connections[1].0 == client_addr && client_connections[1].1 == 0u32;
+        let client1_is_first = client_connections[0].0 == 0
+            && client_connections[0].1 == client_addr
+            || client_connections[1].0 == 0 && client_connections[1].1 == client_addr;
         if client1_is_first {
-            assert!(client_connections.contains(&(client_addr.to_string(), 0u32)));
-            assert!(client_connections.contains(&(client2_addr.to_string(), 1u32)));
+            assert!(client_connections.contains(&(0, client_addr.to_string())));
+            assert!(client_connections.contains(&(1, client2_addr.to_string())));
         } else {
-            assert!(client_connections.contains(&(client_addr.to_string(), 1u32)));
-            assert!(client_connections.contains(&(client2_addr.to_string(), 0u32)));
+            assert!(client_connections.contains(&(1, client_addr.to_string())));
+            assert!(client_connections.contains(&(0, client2_addr.to_string())));
         }
 
         let mut sent_packets = 0;
@@ -537,32 +540,18 @@ async fn receive_packet_e2e_async_send_to() {
             println!("all_test_packets len {}", all_test_packets.len());
             println!("all_other_packets len {}", all_other_packets.len());
             if sent_packets < num_send {
+                assert!(m.async_send_to::<Test>(0, Test { id: 5 }).await.is_ok());
+                assert!(m.async_send_to::<Test>(0, Test { id: 8 }).await.is_ok());
                 assert!(m
-                    .async_send_to::<Test>(client_addr.to_string(), Test { id: 5 })
+                    .async_send_to::<Other>(0, Other { name: "spoorn".to_string(), id: 4 },)
                     .await
                     .is_ok());
                 assert!(m
-                    .async_send_to::<Test>(client_addr.to_string(), Test { id: 8 })
-                    .await
-                    .is_ok());
-                assert!(m
-                    .async_send_to::<Other>(
-                        client_addr.to_string(),
-                        Other { name: "spoorn".to_string(), id: 4 },
-                    )
-                    .await
-                    .is_ok());
-                assert!(m
-                    .async_send_to::<Other>(
-                        client_addr.to_string(),
-                        Other { name: "kiko".to_string(), id: 6 },
-                    )
+                    .async_send_to::<Other>(0, Other { name: "kiko".to_string(), id: 6 },)
                     .await
                     .is_ok());
                 if !client2_closed {
-                    if let Err(e) =
-                        m.async_send_to::<Test>(client2_addr.to_string(), Test { id: 5 }).await
-                    {
+                    if let Err(e) = m.async_send_to::<Test>(1, Test { id: 5 }).await {
                         match e.error_type {
                             ErrorType::Unexpected => {
                                 panic!("Couldn't send Test to client 2 {:?}", e);
@@ -570,9 +559,7 @@ async fn receive_packet_e2e_async_send_to() {
                             ErrorType::Disconnected => {}
                         }
                     }
-                    if let Err(e) =
-                        m.async_send_to::<Test>(client2_addr.to_string(), Test { id: 8 }).await
-                    {
+                    if let Err(e) = m.async_send_to::<Test>(1, Test { id: 8 }).await {
                         match e.error_type {
                             ErrorType::Unexpected => {
                                 panic!("Couldn't send Test to client 2 {:?}", e);
@@ -581,10 +568,7 @@ async fn receive_packet_e2e_async_send_to() {
                         }
                     }
                     if let Err(e) = m
-                        .async_send_to::<Other>(
-                            client2_addr.to_string(),
-                            Other { name: "spoorn".to_string(), id: 4 },
-                        )
+                        .async_send_to::<Other>(1, Other { name: "spoorn".to_string(), id: 4 })
                         .await
                     {
                         match e.error_type {
@@ -594,12 +578,8 @@ async fn receive_packet_e2e_async_send_to() {
                             ErrorType::Disconnected => {}
                         }
                     }
-                    if let Err(e) = m
-                        .async_send_to::<Other>(
-                            client2_addr.to_string(),
-                            Other { name: "kiko".to_string(), id: 6 },
-                        )
-                        .await
+                    if let Err(e) =
+                        m.async_send_to::<Other>(1, Other { name: "kiko".to_string(), id: 6 }).await
                     {
                         match e.error_type {
                             ErrorType::Unexpected => {
@@ -626,7 +606,7 @@ async fn receive_packet_e2e_async_send_to() {
             }
             assert_eq!(received_all.len(), if client2_closed { 1 } else { 2 });
             let (addr, unwrapped) = received_all.remove(0);
-            assert!(m.async_get_client_id(addr.clone()).await.is_some());
+            assert!(m.async_get_remote_address(addr.clone()).await.is_some());
             if unwrapped.is_some() {
                 let mut packets = unwrapped.unwrap();
                 recv_packets += packets.len();
@@ -634,8 +614,8 @@ async fn receive_packet_e2e_async_send_to() {
             }
             if !client2_closed {
                 let (addr2, unwrapped2) = received_all.remove(0);
-                assert!((addr == client_addr || addr == client2_addr) && (addr != addr2));
-                assert!(m.async_get_client_id(addr2.clone()).await.is_some());
+                assert!((addr == 0 || addr == 1) && (addr != addr2));
+                assert!(m.async_get_remote_address(addr2.clone()).await.is_some());
                 if unwrapped2.is_some() {
                     let mut packets = unwrapped2.unwrap();
                     recv_packets += packets.len();
@@ -659,7 +639,7 @@ async fn receive_packet_e2e_async_send_to() {
 
             if !client2_closed {
                 let (addr2, unwrapped2) = received_all.remove(0);
-                assert!((addr == client_addr || addr == client2_addr) && (addr != addr2));
+                assert!((addr == 0 || addr == 1) && (addr != addr2));
                 if unwrapped2.is_some() {
                     assert!(unwrapped2.is_some());
                     let mut packets = unwrapped2.unwrap();
@@ -704,7 +684,10 @@ async fn receive_packet_e2e_async_send_to() {
         assert!(manager.register_send_packet::<Other>().is_ok());
         let client_config = ClientConfig::new(client2_addr, server_addr, 2, 2);
         assert!(manager.async_init_client(client_config).await.is_ok());
-        assert!(manager.async_get_client_connections().await.is_empty());
+        assert_eq!(
+            manager.async_get_remote_connections().await,
+            vec![(0, server_addr.to_string())]
+        );
 
         let mut sent_packets = 0;
         let mut recv_packets = 0;
@@ -715,19 +698,13 @@ async fn receive_packet_e2e_async_send_to() {
             if sent_packets < client2_max_receive {
                 // Either send or send_to should work since there is only one recipient
                 assert!(manager.async_send::<Test>(Test { id: 6 }).await.is_ok());
-                assert!(manager
-                    .async_send_to::<Test>(server_addr.to_string(), Test { id: 9 })
-                    .await
-                    .is_ok());
+                assert!(manager.async_send_to::<Test>(0, Test { id: 9 }).await.is_ok());
                 assert!(manager
                     .async_send::<Other>(Other { name: "mango".to_string(), id: 1 })
                     .await
                     .is_ok());
                 assert!(manager
-                    .async_send_to::<Other>(
-                        server_addr.to_string(),
-                        Other { name: "luna".to_string(), id: 3 },
-                    )
+                    .async_send_to::<Other>(0, Other { name: "luna".to_string(), id: 3 },)
                     .await
                     .is_ok());
                 sent_packets += 4;
@@ -735,7 +712,7 @@ async fn receive_packet_e2e_async_send_to() {
 
             // Close connection early for testing
             if recv_packets >= client2_max_receive {
-                manager.async_close_connection(server_addr).await.unwrap();
+                manager.async_close_connection(0).await.unwrap();
                 println!("client2 closed connection");
                 break;
             }
@@ -752,7 +729,7 @@ async fn receive_packet_e2e_async_send_to() {
             let mut received_all = test_res.unwrap();
             assert!(!received_all.is_empty());
             let (addr, unwrapped) = received_all.remove(0);
-            assert_eq!(addr, server_addr);
+            assert_eq!(addr, 0);
             assert!(unwrapped.is_some());
             let mut packets = unwrapped.unwrap();
             recv_packets += packets.len();
@@ -795,7 +772,7 @@ async fn receive_packet_e2e_async_send_to() {
     assert!(send_results.iter().all(|r| r.is_ok()));
     let client_config = ClientConfig::new(client_addr, server_addr, 2, 2);
     let client = manager.async_init_client(client_config).await;
-    assert!(manager.async_get_client_connections().await.is_empty());
+    assert_eq!(manager.async_get_remote_connections().await, vec![(0, server_addr.to_string())]);
     println!("client1: {:#?}", client);
 
     assert!(client.is_ok());
@@ -810,19 +787,13 @@ async fn receive_packet_e2e_async_send_to() {
         if sent_packets < num_send {
             // Either send or send_to should work since there is only one recipient
             assert!(manager.async_send::<Test>(Test { id: 6 }).await.is_ok());
-            assert!(manager
-                .async_send_to::<Test>(server_addr.to_string(), Test { id: 9 })
-                .await
-                .is_ok());
+            assert!(manager.async_send_to::<Test>(0, Test { id: 9 }).await.is_ok());
             assert!(manager
                 .async_send::<Other>(Other { name: "mango".to_string(), id: 1 })
                 .await
                 .is_ok());
             assert!(manager
-                .async_send_to::<Other>(
-                    server_addr.to_string(),
-                    Other { name: "luna".to_string(), id: 3 },
-                )
+                .async_send_to::<Other>(0, Other { name: "luna".to_string(), id: 3 },)
                 .await
                 .is_ok());
             sent_packets += 4;
@@ -838,7 +809,7 @@ async fn receive_packet_e2e_async_send_to() {
         let mut received_all = test_res.unwrap();
         assert!(!received_all.is_empty());
         let (addr, unwrapped) = received_all.remove(0);
-        assert_eq!(addr, server_addr);
+        assert_eq!(addr, 0);
         assert!(unwrapped.is_some());
         let mut packets = unwrapped.unwrap();
         recv_packets += packets.len();
@@ -902,17 +873,17 @@ async fn receive_packet_e2e_async_send_to_with_finish_connection() {
         assert!(receive_results.iter().all(|r| r.is_ok()));
         let server_config = ServerConfig::new_with_max_clients(server_addr, 2, 2, 2);
         assert!(m.async_init_server(server_config).await.is_ok());
-        let client_connections = m.async_get_client_connections().await;
+        let client_connections = m.async_get_remote_connections().await;
         assert_eq!(client_connections.len(), 2);
-        let client1_is_first = client_connections[0].0 == client_addr
-            && client_connections[0].1 == 0u32
-            || client_connections[1].0 == client_addr && client_connections[1].1 == 0u32;
+        let client1_is_first = client_connections[0].0 == 0
+            && client_connections[0].1 == client_addr
+            || client_connections[1].0 == 0 && client_connections[1].1 == client_addr;
         if client1_is_first {
-            assert!(client_connections.contains(&(client_addr.to_string(), 0u32)));
-            assert!(client_connections.contains(&(client2_addr.to_string(), 1u32)));
+            assert!(client_connections.contains(&(0, client_addr.to_string())));
+            assert!(client_connections.contains(&(1, client2_addr.to_string())));
         } else {
-            assert!(client_connections.contains(&(client_addr.to_string(), 1u32)));
-            assert!(client_connections.contains(&(client2_addr.to_string(), 0u32)));
+            assert!(client_connections.contains(&(1, client_addr.to_string())));
+            assert!(client_connections.contains(&(0, client2_addr.to_string())));
         }
 
         let mut sent_packets = 0;
@@ -925,32 +896,18 @@ async fn receive_packet_e2e_async_send_to_with_finish_connection() {
             println!("all_test_packets len {}", all_test_packets.len());
             println!("all_other_packets len {}", all_other_packets.len());
             if sent_packets < num_send {
+                assert!(m.async_send_to::<Test>(0, Test { id: 5 }).await.is_ok());
+                assert!(m.async_send_to::<Test>(0, Test { id: 8 }).await.is_ok());
                 assert!(m
-                    .async_send_to::<Test>(client_addr.to_string(), Test { id: 5 })
+                    .async_send_to::<Other>(0, Other { name: "spoorn".to_string(), id: 4 },)
                     .await
                     .is_ok());
                 assert!(m
-                    .async_send_to::<Test>(client_addr.to_string(), Test { id: 8 })
-                    .await
-                    .is_ok());
-                assert!(m
-                    .async_send_to::<Other>(
-                        client_addr.to_string(),
-                        Other { name: "spoorn".to_string(), id: 4 },
-                    )
-                    .await
-                    .is_ok());
-                assert!(m
-                    .async_send_to::<Other>(
-                        client_addr.to_string(),
-                        Other { name: "kiko".to_string(), id: 6 },
-                    )
+                    .async_send_to::<Other>(0, Other { name: "kiko".to_string(), id: 6 },)
                     .await
                     .is_ok());
                 if !client2_closed {
-                    if let Err(e) =
-                        m.async_send_to::<Test>(client2_addr.to_string(), Test { id: 5 }).await
-                    {
+                    if let Err(e) = m.async_send_to::<Test>(1, Test { id: 5 }).await {
                         match e.error_type {
                             ErrorType::Unexpected => {
                                 panic!("Couldn't send Test to client 2 {:?}", e);
@@ -958,9 +915,7 @@ async fn receive_packet_e2e_async_send_to_with_finish_connection() {
                             ErrorType::Disconnected => {}
                         }
                     }
-                    if let Err(e) =
-                        m.async_send_to::<Test>(client2_addr.to_string(), Test { id: 8 }).await
-                    {
+                    if let Err(e) = m.async_send_to::<Test>(1, Test { id: 8 }).await {
                         match e.error_type {
                             ErrorType::Unexpected => {
                                 panic!("Couldn't send Test to client 2 {:?}", e);
@@ -969,10 +924,7 @@ async fn receive_packet_e2e_async_send_to_with_finish_connection() {
                         }
                     }
                     if let Err(e) = m
-                        .async_send_to::<Other>(
-                            client2_addr.to_string(),
-                            Other { name: "spoorn".to_string(), id: 4 },
-                        )
+                        .async_send_to::<Other>(1, Other { name: "spoorn".to_string(), id: 4 })
                         .await
                     {
                         match e.error_type {
@@ -982,12 +934,8 @@ async fn receive_packet_e2e_async_send_to_with_finish_connection() {
                             ErrorType::Disconnected => {}
                         }
                     }
-                    if let Err(e) = m
-                        .async_send_to::<Other>(
-                            client2_addr.to_string(),
-                            Other { name: "kiko".to_string(), id: 6 },
-                        )
-                        .await
+                    if let Err(e) =
+                        m.async_send_to::<Other>(1, Other { name: "kiko".to_string(), id: 6 }).await
                     {
                         match e.error_type {
                             ErrorType::Unexpected => {
@@ -1014,7 +962,7 @@ async fn receive_packet_e2e_async_send_to_with_finish_connection() {
             }
             assert_eq!(received_all.len(), if client2_closed { 1 } else { 2 });
             let (addr, unwrapped) = received_all.remove(0);
-            assert!(m.async_get_client_id(addr.clone()).await.is_some());
+            assert!(m.async_get_remote_address(addr.clone()).await.is_some());
             if unwrapped.is_some() {
                 let mut packets = unwrapped.unwrap();
                 recv_packets += packets.len();
@@ -1022,8 +970,8 @@ async fn receive_packet_e2e_async_send_to_with_finish_connection() {
             }
             if !client2_closed {
                 let (addr2, unwrapped2) = received_all.remove(0);
-                assert!((addr == client_addr || addr == client2_addr) && (addr != addr2));
-                assert!(m.async_get_client_id(addr2.clone()).await.is_some());
+                assert!((addr == 0 || addr == 1) && (addr != addr2));
+                assert!(m.async_get_remote_address(addr2).await.is_some());
                 if unwrapped2.is_some() {
                     let mut packets = unwrapped2.unwrap();
                     recv_packets += packets.len();
@@ -1056,7 +1004,7 @@ async fn receive_packet_e2e_async_send_to_with_finish_connection() {
 
             if !client2_closed {
                 let (addr2, unwrapped2) = received_all.remove(0);
-                assert!((addr == client_addr || addr == client2_addr) && (addr != addr2));
+                assert!((addr == 0 || addr == 1) && (addr != addr2));
                 if unwrapped2.is_some() {
                     assert!(unwrapped2.is_some());
                     let mut packets = unwrapped2.unwrap();
@@ -1102,7 +1050,10 @@ async fn receive_packet_e2e_async_send_to_with_finish_connection() {
         assert!(send_results.iter().all(|r| r.is_ok()));
         let client_config = ClientConfig::new(client2_addr, server_addr, 2, 2);
         assert!(manager.async_init_client(client_config).await.is_ok());
-        assert!(manager.async_get_client_connections().await.is_empty());
+        assert_eq!(
+            manager.async_get_remote_connections().await,
+            vec![(0, server_addr.to_string())]
+        );
 
         let mut sent_packets = 0;
         let mut recv_packets = 0;
@@ -1113,19 +1064,13 @@ async fn receive_packet_e2e_async_send_to_with_finish_connection() {
             if sent_packets < client2_max_receive {
                 // Either send or send_to should work since there is only one recipient
                 assert!(manager.async_send::<Test>(Test { id: 6 }).await.is_ok());
-                assert!(manager
-                    .async_send_to::<Test>(server_addr.to_string(), Test { id: 9 })
-                    .await
-                    .is_ok());
+                assert!(manager.async_send_to::<Test>(0, Test { id: 9 }).await.is_ok());
                 assert!(manager
                     .async_send::<Other>(Other { name: "mango".to_string(), id: 1 })
                     .await
                     .is_ok());
                 assert!(manager
-                    .async_send_to::<Other>(
-                        server_addr.to_string(),
-                        Other { name: "luna".to_string(), id: 3 },
-                    )
+                    .async_send_to::<Other>(0, Other { name: "luna".to_string(), id: 3 },)
                     .await
                     .is_ok());
                 sent_packets += 4;
@@ -1133,7 +1078,7 @@ async fn receive_packet_e2e_async_send_to_with_finish_connection() {
 
             // Close connection early for testing
             if recv_packets >= client2_max_receive {
-                manager.async_finish_connection(server_addr).await.unwrap();
+                manager.async_finish_connection(0).await.unwrap();
                 println!(
                     "client2 finished connection, sent {}, received {}",
                     sent_packets, recv_packets
@@ -1153,7 +1098,7 @@ async fn receive_packet_e2e_async_send_to_with_finish_connection() {
             let mut received_all = test_res.unwrap();
             assert!(!received_all.is_empty());
             let (addr, unwrapped) = received_all.remove(0);
-            assert_eq!(addr, server_addr);
+            assert_eq!(addr, 0);
             assert!(unwrapped.is_some());
             let mut packets = unwrapped.unwrap();
             recv_packets += packets.len();
@@ -1196,7 +1141,7 @@ async fn receive_packet_e2e_async_send_to_with_finish_connection() {
     assert!(send_results.iter().all(|r| r.is_ok()));
     let client_config = ClientConfig::new(client_addr, server_addr, 2, 2);
     let client = manager.async_init_client(client_config).await;
-    assert!(manager.async_get_client_connections().await.is_empty());
+    assert_eq!(manager.async_get_remote_connections().await, vec![(0, server_addr.to_string())]);
     println!("client1: {:#?}", client);
 
     assert!(client.is_ok());
@@ -1211,19 +1156,13 @@ async fn receive_packet_e2e_async_send_to_with_finish_connection() {
         if sent_packets < num_send {
             // Either send or send_to should work since there is only one recipient
             assert!(manager.async_send::<Test>(Test { id: 6 }).await.is_ok());
-            assert!(manager
-                .async_send_to::<Test>(server_addr.to_string(), Test { id: 9 })
-                .await
-                .is_ok());
+            assert!(manager.async_send_to::<Test>(0, Test { id: 9 }).await.is_ok());
             assert!(manager
                 .async_send::<Other>(Other { name: "mango".to_string(), id: 1 })
                 .await
                 .is_ok());
             assert!(manager
-                .async_send_to::<Other>(
-                    server_addr.to_string(),
-                    Other { name: "luna".to_string(), id: 3 },
-                )
+                .async_send_to::<Other>(0, Other { name: "luna".to_string(), id: 3 },)
                 .await
                 .is_ok());
             sent_packets += 4;
@@ -1239,7 +1178,7 @@ async fn receive_packet_e2e_async_send_to_with_finish_connection() {
         let mut received_all = test_res.unwrap();
         assert!(!received_all.is_empty());
         let (addr, unwrapped) = received_all.remove(0);
-        assert_eq!(addr, server_addr);
+        assert_eq!(addr, 0);
         assert!(unwrapped.is_some());
         let mut packets = unwrapped.unwrap();
         recv_packets += packets.len();

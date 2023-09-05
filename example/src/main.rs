@@ -102,8 +102,8 @@ fn sync_example() {
 
     // broadcast packets to all recipients, and receive all packets from sender
     server_manager.broadcast(OtherPosition { x: 0, y: 1 }).unwrap();
-    // Or you can send to a specific recipient via the address
-    server_manager.send_to(client_addr, ServerAck).unwrap();
+    // Or you can send to a specific recipient via the remote Id
+    server_manager.send_to(0, ServerAck).unwrap();
     // received() variants can be a blocking call based on the boolean flag passed in.
     // WARNING: be careful with blocking calls in your actual application, as it can cause your app
     // to freeze if packets aren't sent exactly in the order you expect!
@@ -115,7 +115,7 @@ fn sync_example() {
             .unwrap();
         // In this case, there's only one sender: the server
         let queue_packets = queue.pop().unwrap();
-        if queue_packets.0 == server_addr {
+        if queue_packets.0 == 0 {
             if let Some(packets) = queue_packets.1 {
                 break packets;
             }
@@ -126,7 +126,7 @@ fn sync_example() {
         let mut queue =
             client_manager.received_all::<ServerAck, ServerAckPacketBuilder>(false).unwrap();
         let queue_packets = queue.pop().unwrap();
-        if queue_packets.0 == server_addr {
+        if queue_packets.0 == 0 {
             if let Some(packets) = queue_packets.1 {
                 break packets;
             }
@@ -190,8 +190,8 @@ async fn async_sync_example() {
 
     // broadcast packets to all recipients, and receive all packets from sender
     server_manager.async_broadcast(OtherPosition { x: 0, y: 1 }).await.unwrap();
-    // Or you can send to a specific recipient via the address
-    server_manager.async_send_to(client_addr, ServerAck).await.unwrap();
+    // Or you can send to a specific recipient via the remote Id
+    server_manager.async_send_to(0, ServerAck).await.unwrap();
     // received() variants can be a blocking call based on the boolean flag passed in.
     // WARNING: be careful with blocking calls in your actual application, as it can cause your app
     // to freeze if packets aren't sent exactly in the order you expect!
@@ -204,7 +204,7 @@ async fn async_sync_example() {
             .unwrap();
         // In this case, there's only one sender: the server
         let queue_packets = queue.pop().unwrap();
-        if queue_packets.0 == server_addr {
+        if queue_packets.0 == 0 {
             if let Some(packets) = queue_packets.1 {
                 break packets;
             }
@@ -217,7 +217,7 @@ async fn async_sync_example() {
             .await
             .unwrap();
         let queue_packets = queue.pop().unwrap();
-        if queue_packets.0 == server_addr {
+        if queue_packets.0 == 0 {
             if let Some(packets) = queue_packets.1 {
                 break packets;
             }
